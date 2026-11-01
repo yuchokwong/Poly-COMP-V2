@@ -79,7 +79,15 @@ All of `data/` is gitignored. Cite arXiv:2305.13703 when using Meme-Cap.
 
 ## Quick start
 
+```bash
+git clone https://github.com/yuchokwong/Poly-COMP-V2.git
+cd Poly-COMP-V2
+```
+
 ### Docker (recommended for serving)
+
+Needs Docker Engine with Compose v2.24 or newer (the compose files mark `.env` as
+optional with `env_file.required`).
 
 ```bash
 cp .env.example .env            # optional; edit models/weights if needed

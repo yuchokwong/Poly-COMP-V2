@@ -4,6 +4,7 @@
 # line below provides a default wheel.
 torch>=2.2
 open_clip_torch>=2.24.0
+transformers>=4.49
 faiss-cpu>=1.8.0
 numpy>=1.26
 pillow>=10.2

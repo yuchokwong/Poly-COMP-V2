@@ -1,428 +1,369 @@
-"use strict";
+/* Home overview and the shared strategy search page. */
+(function () {
+  "use strict";
 
-const PAGE_SIZE = 12;
-const MAX_RESULTS = 100;
+  const { api, esc, fmt, pct, strategyLabel, componentLabel, queryFromUrl, setUrlState } = window.TSR;
 
-const el = {
-  form: document.getElementById("search-form"),
-  query: document.getElementById("query"),
-  button: document.getElementById("search-btn"),
-  topk: document.getElementById("topk"),
-  topkValue: document.getElementById("topk-value"),
-  hybrid: document.getElementById("hybrid"),
-  split: document.getElementById("split"),
-  minscore: document.getElementById("minscore"),
-  shareBtn: document.getElementById("share-btn"),
-  status: document.getElementById("status"),
-  results: document.getElementById("results"),
-  galleryHead: document.getElementById("gallery-head"),
-  resultMeta: document.getElementById("result-meta"),
-  stats: document.getElementById("stats"),
-  loadMore: document.getElementById("load-more"),
-  loadMoreBtn: document.getElementById("load-more-btn"),
-  lightbox: document.getElementById("lightbox"),
-  lightboxImg: document.getElementById("lightbox-img"),
-  lightboxInfo: document.getElementById("lightbox-info"),
-  lightboxClose: document.getElementById("lightbox-close"),
-  settingsBtn: document.getElementById("settings-btn"),
-  settingsModal: document.getElementById("settings-modal"),
-  settingsClose: document.getElementById("settings-close"),
-  settingsFields: document.getElementById("settings-fields"),
-  settingsSave: document.getElementById("settings-save"),
-  settingsReload: document.getElementById("settings-reload"),
-  settingsMsg: document.getElementById("settings-msg"),
-};
+  const PAGE = document.body.dataset.page;
 
-const state = { maxScore: 1, stats: null, k: PAGE_SIZE, data: null };
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
-
-function setStatus(message, kind) {
-  if (!message) {
-    el.status.classList.add("hidden");
-    el.status.innerHTML = "";
-    return;
-  }
-  el.status.className = "status" + (kind ? ` ${kind}` : "");
-  el.status.innerHTML = message;
-  el.status.classList.remove("hidden");
-}
-
-async function loadStats() {
-  try {
-    const resp = await fetch("/api/stats");
-    const data = await resp.json();
-    state.stats = data;
-    const ready = data.ready;
-    el.stats.innerHTML =
-      `<span class="dot ${ready ? "" : "bad"}">●</span> ` +
-      `${ready ? "ready" : "not indexed"}` +
-      `<span class="pill">${data.num_images.toLocaleString()} images</span>`;
-    if (!ready) {
-      setStatus(
-        "The gallery index is not built yet. Run <code>python -m tsr build</code> " +
-        "then restart the server.",
-        "warn"
-      );
-    }
-  } catch (err) {
-    el.stats.innerHTML = `<span class="dot bad">●</span> offline`;
-    setStatus(`Cannot reach the API: ${escapeHtml(err.message)}`, "error");
-  }
-}
-
-function urlState() {
-  const p = new URLSearchParams(location.search);
-  return {
-    q: p.get("q") || "",
-    k: Math.min(MAX_RESULTS, Math.max(PAGE_SIZE, Number(p.get("k")) || PAGE_SIZE)),
-    hybrid: p.get("hybrid") !== "false",
-    split: p.get("split") || "",
-    minscore: Number(p.get("minscore")) || 0,
+  const STRATEGY_PAGE = {
+    "/clip": {
+      key: "clip",
+      kicker: "Strategy A · pixels only",
+      title: "CLIP only",
+      description:
+        "The OpenCLIP text encoder searches the shared image index. No captions, " +
+        "annotations or generated descriptions — a zero-knowledge baseline for visual similarity.",
+    },
+    "/clip-nlp": {
+      key: "clip_nlp",
+      kicker: "Strategy B · human annotations",
+      title: "CLIP + NLP",
+      description:
+        "CLIP visual similarity fused with a dense index over Meme-Cap captions and " +
+        "field-weighted BM25, then optionally reranked by a cross-encoder. Uses the human labels.",
+    },
+    "/vlm": {
+      key: "vlm",
+      kicker: "Strategy C · generated labels",
+      title: "VLM descriptions",
+      description:
+        "Qwen2.5-VL reads each meme offline and writes scene, OCR and meaning text. " +
+        "Queries are matched against those descriptions, optionally fused with CLIP.",
+    },
   };
-}
 
-function applyUrlState() {
-  const s = urlState();
-  el.query.value = s.q;
-  el.topk.value = s.k;
-  el.topkValue.textContent = s.k;
-  el.hybrid.checked = s.hybrid;
-  el.split.value = s.split;
-  el.minscore.value = s.minscore || "";
-  state.k = s.k;
-}
+  const SCORE_LABEL = {
+    clip: "CLIP",
+    clip_nlp: "Fused score",
+    vlm: "VLM score",
+  };
 
-function syncUrl(push) {
-  const p = new URLSearchParams();
-  if (el.query.value.trim()) p.set("q", el.query.value.trim());
-  p.set("k", String(state.k));
-  p.set("hybrid", String(el.hybrid.checked));
-  if (el.split.value) p.set("split", el.split.value);
-  if (el.minscore.value) p.set("minscore", el.minscore.value);
-  const url = `${location.pathname}?${p.toString()}`;
-  history[push ? "pushState" : "replaceState"]({}, "", url);
-}
-
-async function runSearch(push) {
-  const query = el.query.value.trim();
-  if (!query) {
-    el.query.focus();
-    return;
-  }
-  state.k = Math.max(PAGE_SIZE, Number(el.topk.value) || PAGE_SIZE);
-  const hybrid = el.hybrid.checked;
-  const urlK = Math.max(state.k, Number(new URLSearchParams(location.search).get("k")) || 0);
-
-  el.button.disabled = true;
-  el.button.textContent = "Searching…";
-  setStatus("Searching the gallery…");
-
-  try {
-    const params = new URLSearchParams({ q: query, k: String(Math.min(MAX_RESULTS, urlK)), hybrid: String(hybrid) });
-    const resp = await fetch(`/api/search?${params.toString()}`);
-    const data = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data.detail || `HTTP ${resp.status}`);
+  // ------------------------------------------------------------------ //
+  // Home
+  // ------------------------------------------------------------------ //
+  function renderCardStatus(card, item, stats) {
+    card.classList.remove("skeleton");
+    const pill = card.querySelector("[data-ready]");
+    if (pill) {
+      pill.classList.remove("ready", "unavailable");
+      pill.classList.add(item && item.ready ? "ready" : "unavailable");
+      pill.textContent = item && item.ready ? "ready" : "unavailable";
+      if (item && item.error) pill.title = item.error;
     }
-    state.data = data;
-    syncUrl(push);
-    renderResults(data);
-  } catch (err) {
-    setStatus(`Search failed: ${escapeHtml(err.message)}`, "error");
-  } finally {
-    el.button.disabled = false;
-    el.button.textContent = "Search";
-  }
-}
-
-function filtered(items) {
-  const split = el.split.value;
-  const min = Number(el.minscore.value) || 0;
-  return items.filter((r) => (!split || r.split === split) && r.score >= min);
-}
-
-function renderResults(data) {
-  el.results.innerHTML = "";
-  const items = filtered(data.results);
-  state.maxScore = Math.max(...items.map((r) => r.score), 1e-6);
-
-  if (!items.length) {
-    setStatus(
-      data.results.length
-        ? "No results match the current filters."
-        : "No results. Try a different query.",
-      "warn"
-    );
-    el.galleryHead.classList.add("hidden");
-    el.loadMore.classList.add("hidden");
-    return;
+    const existing = card.querySelector(".meta-line");
+    if (existing) existing.remove();
+    if (item && item.ready) {
+      const parts = [];
+      if (stats && stats.num_images) parts.push(`${fmt(stats.num_images)} images`);
+      if (item.num_docs) parts.push(`${fmt(item.num_docs)} docs`);
+      if (item.coverage != null) parts.push(`${fmt(item.coverage * 100, 0)}% coverage`);
+      if (item.dim) parts.push(`dim ${item.dim}`);
+      const line = document.createElement("p");
+      line.className = "meta-line";
+      line.textContent = parts.join(" · ");
+      card.querySelector("footer").before(line);
+    }
   }
 
-  setStatus("");
-  el.galleryHead.classList.remove("hidden");
-  const filterNote = items.length !== data.results.length ? ` (${items.length} shown)` : "";
-  el.resultMeta.textContent =
-    `${items.length} results for “${data.query}” · ${data.latency_ms} ms` +
-    (data.hybrid ? " · hybrid" : "") + filterNote;
-
-  const frag = document.createDocumentFragment();
-  items.forEach((item) => frag.appendChild(buildCard(item)));
-  el.results.appendChild(frag);
-
-  const canLoadMore = data.count >= state.k && state.k < MAX_RESULTS;
-  el.loadMore.classList.toggle("hidden", !canLoadMore);
-}
-
-function buildCard(item) {
-  const card = document.createElement("article");
-  card.className = "card";
-
-  const pct = Math.max(0.02, item.score / state.maxScore);
-  const caption = item.captions && item.captions.length ? item.captions[0] : "(no caption)";
-
-  card.innerHTML = `
-    <span class="rank">#${item.rank}</span>
-    <span class="score">${item.score.toFixed(3)}</span>
-    <img class="thumb" loading="lazy" src="/api/thumbnail/${item.id}?size=480" alt="${escapeHtml(caption)}" />
-    <div class="card-body">
-      <p class="caption">${escapeHtml(caption)}</p>
-      <div class="meta">
-        ${item.split ? `<span class="tag">${escapeHtml(item.split)}</span>` : ""}
-        ${item.category ? `<span class="tag">${escapeHtml(item.category)}</span>` : ""}
-        <span class="tag">${escapeHtml(item.image_id)}</span>
-      </div>
-      <div class="bar"><span style="width:${(pct * 100).toFixed(1)}%"></span></div>
-    </div>`;
-
-  card.addEventListener("click", () => openLightbox(item));
-  return card;
-}
-
-function openLightbox(item) {
-  el.lightboxImg.src = item.url;
-  const lines = [
-    `rank #${item.rank} · score ${item.score.toFixed(4)}`,
-    item.image_id,
-  ];
-  if (item.captions && item.captions.length) {
-    lines.push(...item.captions.slice(0, 3).map((c) => `“${escapeHtml(c)}”`));
+  async function initHome() {
+    try {
+      const [health, stats] = await Promise.all([api("/api/health"), api("/api/stats")]);
+      document.getElementById("stat-images").textContent = fmt(stats.dataset.num_images);
+      document.getElementById("stat-vlm").textContent = fmt(stats.dataset.vlm_docs);
+      const ready = (health.strategies || []).filter((item) => item.ready).length;
+      document.getElementById("stat-ready").textContent = `${ready}/${(health.strategies || []).length}`;
+      for (const card of document.querySelectorAll(".strategy-card")) {
+        const key = card.dataset.strategy;
+        const item = (stats.strategies || []).find((entry) => (entry.key || entry.strategy) === key);
+        const summary = item && item.key ? item : item;
+        renderCardStatus(card, summary || { ready: false }, summary);
+      }
+    } catch (error) {
+      const box = document.getElementById("home-error");
+      if (box) {
+        box.hidden = false;
+        box.querySelector("[data-error-text]").textContent = error.message;
+      }
+    }
   }
-  el.lightboxInfo.innerHTML =
-    lines.join("<br/>") +
-    `<br/><button type="button" class="chip" id="similar-btn">Find similar images</button>`;
-  const btn = document.getElementById("similar-btn");
-  if (btn) {
-    btn.addEventListener("click", () => {
-      closeLightbox();
-      runSimilar(item.id);
+
+  // ------------------------------------------------------------------ //
+  // Search page
+  // ------------------------------------------------------------------ //
+  let currentStrategy = "clip";
+  let lastQuery = "";
+
+  function status(message, isError) {
+    const node = document.getElementById("status");
+    if (!node) return;
+    node.textContent = message || "";
+    node.classList.toggle("error", Boolean(isError));
+  }
+
+  function componentBars(components) {
+    const order = ["clip", "doc", "bm25", "rerank"];
+    const entries = order
+      .filter((name) => components[name] != null && components[name] !== 0)
+      .map((name) => [name, components[name]]);
+    if (!entries.length) return "";
+    const rows = entries
+      .map(
+        ([name, value]) => `
+        <div class="component" data-name="${esc(name)}">
+          <span>${esc(componentLabel(name))}</span>
+          <span class="bar"><i style="width:${pct(value).toFixed(1)}%"></i></span>
+          <span>${fmt(value, 3)}</span>
+        </div>`
+      )
+      .join("");
+    return `<div class="components">${rows}</div>`;
+  }
+
+  function captionFor(result) {
+    const scene = (result.img_captions || [])[0];
+    const meaning = (result.meme_captions || [])[0];
+    return scene || meaning || "No annotation available.";
+  }
+
+  function renderResults(payload) {
+    const grid = document.getElementById("results");
+    const empty = document.getElementById("empty-state");
+    if (!grid) return;
+    if (!payload.results || !payload.results.length) {
+      grid.innerHTML = "";
+      if (empty) empty.hidden = false;
+      return;
+    }
+    if (empty) empty.hidden = true;
+    grid.innerHTML = payload.results
+      .map(
+        (result) => `
+        <article class="card">
+          <button class="card-media" type="button" data-id="${result.id}"
+                  aria-label="Open details for ${esc(result.image_id)}">
+            <img loading="lazy" src="${esc(result.thumbnail || "/api/thumbnail/" + result.id)}"
+                 alt="${esc(captionFor(result))}">
+            <span class="rank-badge">#${result.rank}</span>
+          </button>
+          <div class="card-body">
+            <div class="card-title">${esc(result.title || result.image_id)}</div>
+            <p class="card-caption">${esc(captionFor(result))}</p>
+            ${componentBars(result.score_components || {})}
+            <div class="card-score">
+              <span>${esc(SCORE_LABEL[payload.strategy] || "Score")}</span>
+              <strong>${fmt(result.score, 3)}</strong>
+            </div>
+          </div>
+        </article>`
+      )
+      .join("");
+  }
+
+  async function runSearch(query, k) {
+    const button = document.getElementById("search-button");
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    lastQuery = trimmed;
+    if (button) button.disabled = true;
+    status("Searching…");
+    try {
+      const url = `/api/strategies/${encodeURIComponent(currentStrategy)}/search` +
+        `?q=${encodeURIComponent(trimmed)}&k=${encodeURIComponent(k)}`;
+      const payload = await api(url);
+      renderResults(payload);
+      const expanded = (payload.expanded_queries || []).filter((item) => item !== trimmed);
+      const extra = expanded.length ? ` · expanded: ${expanded.join(", ")}` : "";
+      status(`${payload.count} results · ${fmt(payload.latency_ms, 1)} ms${extra}`);
+      setUrlState(trimmed, k);
+    } catch (error) {
+      status(error.message, true);
+      const grid = document.getElementById("results");
+      if (grid) grid.innerHTML = "";
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  function detailMarkup(data) {
+    const scenes = (data.img_captions || [])
+      .map((text) => `<li>${esc(text)}</li>`)
+      .join("");
+    const meanings = (data.meme_captions || [])
+      .map((text) => `<li>${esc(text)}</li>`)
+      .join("");
+    const metaphors = (data.metaphors || [])
+      .map(
+        (item) => `<li><span><strong>${esc(item.metaphor)}</strong></span>
+          <span class="arrow">→ ${esc(item.meaning)}</span></li>`
+      )
+      .join("");
+    const vlm = data.vlm
+      ? `<section class="annotation-block">
+           <h3>VLM description <small>${esc(data.vlm.model || "")}</small></h3>
+           <ul>
+             ${data.vlm.scene ? `<li>${esc(data.vlm.scene)}</li>` : ""}
+             ${data.vlm.ocr_text ? `<li><strong>OCR:</strong> ${esc(data.vlm.ocr_text)}</li>` : ""}
+             ${data.vlm.meaning ? `<li><strong>Meaning:</strong> ${esc(data.vlm.meaning)}</li>` : ""}
+           </ul>
+         </section>`
+      : "";
+    return `
+      <div class="detail-hero"><img src="${esc(data.url)}" alt="${esc(data.title || data.image_id)}"></div>
+      <div class="detail-content">
+        <div class="detail-title">
+          <h2>${esc(data.title || data.image_id)}</h2>
+          <span class="image-id">${esc(data.image_id)} · #${data.id}</span>
+        </div>
+        <div class="detail-meta">
+          <span class="pill">${esc(data.split || "unknown split")}</span>
+          <span class="pill">${esc(data.category || "meme")}</span>
+          ${data.source_url
+            ? `<a class="source-link" href="${esc(data.source_url)}" target="_blank" rel="noreferrer">original post ↗</a>`
+            : ""}
+        </div>
+        <div class="detail-columns">
+          <section class="annotation-block"><h3>Scene</h3><ul>${scenes || "<li>—</li>"}</ul></section>
+          <section class="annotation-block"><h3>Meaning</h3><ul>${meanings || "<li>—</li>"}</ul></section>
+        </div>
+        ${metaphors ? `<section><h3>Metaphors</h3><ul class="metaphor-list">${metaphors}</ul></section>` : ""}
+        ${vlm}
+        <section>
+          <h3>Similar images <small>via ${esc(strategyLabel(currentStrategy))}</small></h3>
+          <div class="similar-strip" id="similar-strip"><span class="text-link">loading…</span></div>
+        </section>
+      </div>`;
+  }
+
+  async function loadSimilar(id, strategyKey) {
+    const strip = document.getElementById("similar-strip");
+    if (!strip) return;
+    try {
+      const payload = await api(
+        `/api/similar/${id}?strategy=${encodeURIComponent(strategyKey)}&k=8`
+      );
+      if (!payload.results || !payload.results.length) {
+        strip.innerHTML = '<span class="text-link">No neighbours available.</span>';
+        return;
+      }
+      strip.innerHTML = payload.results
+        .slice(0, 8)
+        .map(
+          (item) => `<button type="button" data-similar-id="${item.id}"
+                        title="${esc(item.title || item.image_id)}">
+                       <img loading="lazy" src="${esc(item.thumbnail)}" alt="">
+                     </button>`
+        )
+        .join("");
+    } catch (error) {
+      strip.innerHTML = `<span class="text-link">${esc(error.message)}</span>`;
+    }
+  }
+
+  async function openDetail(id, strategyKey) {
+    const dialog = document.getElementById("detail-dialog");
+    if (!dialog) return;
+    const body = document.getElementById("detail-body");
+    if (!body) return;
+    body.innerHTML = '<div class="detail-content"><p class="text-link">Loading…</p></div>';
+    if (!dialog.open) dialog.showModal();
+    try {
+      const data = await api(`/api/detail/${id}`);
+      body.innerHTML = detailMarkup(data);
+      loadSimilar(id, strategyKey || currentStrategy);
+    } catch (error) {
+      body.innerHTML =
+        `<div class="detail-content"><div class="notice error">${esc(error.message)}</div></div>`;
+    }
+  }
+
+  window.TSR.openDetail = openDetail;
+
+  function initDialog() {
+    const dialog = document.getElementById("detail-dialog");
+    if (!dialog) return;
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) dialog.close();
+      const close = event.target.closest("[data-close]");
+      if (close) dialog.close();
+      const similar = event.target.closest("[data-similar-id]");
+      if (similar) openDetail(Number(similar.dataset.similarId), currentStrategy);
+    });
+    dialog.addEventListener("close", () => {
+      const body = document.getElementById("detail-body");
+      if (body) body.innerHTML = "";
     });
   }
-  el.lightbox.classList.remove("hidden");
-}
 
-async function runSimilar(pk) {
-  el.button.disabled = true;
-  setStatus("Finding similar images…");
-  try {
-    const k = Math.max(state.k, PAGE_SIZE);
-    const resp = await fetch(`/api/similar/${pk}?k=${Math.min(MAX_RESULTS, k)}`);
-    const data = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data.detail || `HTTP ${resp.status}`);
-    }
-    state.data = data;
-    renderResults(data);
-  } catch (err) {
-    setStatus(`Similar search failed: ${escapeHtml(err.message)}`, "error");
-  } finally {
-    el.button.disabled = false;
-  }
-}
-
-function closeLightbox() {
-  el.lightbox.classList.add("hidden");
-  el.lightboxImg.src = "";
-}
-
-async function openSettings() {
-  el.settingsMsg.textContent = "Loading…";
-  el.settingsModal.classList.remove("hidden");
-  await loadSettings();
-}
-
-function closeSettings() {
-  el.settingsModal.classList.add("hidden");
-}
-
-async function loadSettings() {
-  try {
-    const resp = await fetch("/api/settings");
-    const data = await resp.json();
-    renderSettings(data.fields || []);
-    el.settingsMsg.textContent = "";
-  } catch (err) {
-    el.settingsMsg.textContent = `Load failed: ${err.message}`;
-  }
-}
-
-function renderSettings(fields) {
-  el.settingsFields.innerHTML = "";
-  const groups = {};
-  fields.forEach((f) => {
-    (groups[f.group] = groups[f.group] || []).push(f);
-  });
-  Object.entries(groups).forEach(([group, items]) => {
-    const section = document.createElement("section");
-    section.className = "settings-group";
-    const heading = document.createElement("h3");
-    heading.textContent = group;
-    section.appendChild(heading);
-    items.forEach((f) => section.appendChild(buildSettingRow(f)));
-    el.settingsFields.appendChild(section);
-  });
-}
-
-function buildSettingRow(field) {
-  const row = document.createElement("label");
-  row.className = "setting-row" + (field.editable ? "" : " readonly");
-  const name = document.createElement("span");
-  name.className = "setting-label";
-  name.textContent = field.label || field.key;
-  if (field.help) name.title = field.help;
-  row.appendChild(name);
-
-  let control;
-  if (field.type === "bool") {
-    control = document.createElement("input");
-    control.type = "checkbox";
-    control.checked = !!field.value;
-  } else if (field.type === "enum") {
-    control = document.createElement("select");
-    (field.choices || []).forEach((c) => {
-      const opt = document.createElement("option");
-      opt.value = c;
-      opt.textContent = c;
-      control.appendChild(opt);
+  async function initSearch() {
+    const config = STRATEGY_PAGE[window.location.pathname] || STRATEGY_PAGE["/clip"];
+    currentStrategy = config.key;
+    document.getElementById("strategy-kicker").textContent = config.kicker;
+    document.getElementById("strategy-title").textContent = config.title;
+    document.getElementById("strategy-description").textContent = config.description;
+    document.getElementById("footer-strategy").textContent =
+      `Meme-Cap · ${strategyLabel(currentStrategy)} · research use only`;
+    document.title = `${config.title} — Meme Retrieval`;
+    document.querySelectorAll("[data-nav]").forEach((link) => {
+      if (link.dataset.nav === currentStrategy) link.setAttribute("aria-current", "page");
     });
-    control.value = field.value;
-  } else if (field.type === "list") {
-    control = document.createElement("textarea");
-    control.rows = 4;
-    control.value = Array.isArray(field.value) ? field.value.join("\n") : (field.value || "");
-  } else if (field.type === "int" || field.type === "float") {
-    control = document.createElement("input");
-    control.type = "number";
-    if (field.min != null) control.min = field.min;
-    if (field.max != null) control.max = field.max;
-    control.step = field.type === "int" ? "1" : (field.step || 0.05);
-    control.value = field.value ?? "";
-  } else {
-    control = document.createElement("input");
-    control.type = "text";
-    control.value = field.value ?? "";
-  }
-  control.dataset.key = field.key;
-  control.dataset.type = field.type;
-  if (!field.editable) control.disabled = true;
-  row.appendChild(control);
-  return row;
-}
 
-function collectSettings() {
-  const out = {};
-  el.settingsFields.querySelectorAll("[data-key]").forEach((c) => {
-    if (c.disabled) return;
-    const type = c.dataset.type;
-    if (type === "bool") out[c.dataset.key] = c.checked;
-    else if (type === "list") out[c.dataset.key] = c.value;
-    else if (type === "int") out[c.dataset.key] = parseInt(c.value, 10);
-    else if (type === "float") out[c.dataset.key] = parseFloat(c.value);
-    else out[c.dataset.key] = c.value;
-  });
-  return out;
-}
+    const input = document.getElementById("query");
+    const range = document.getElementById("top-k");
+    const rangeOut = document.getElementById("top-k-value");
+    const form = document.getElementById("search-form");
 
-async function saveSettings() {
-  el.settingsMsg.textContent = "Saving…";
-  try {
-    const resp = await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(collectSettings()),
+    range.addEventListener("input", () => {
+      rangeOut.textContent = range.value;
     });
-    const data = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data.detail || `HTTP ${resp.status}`);
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      runSearch(input.value, Number(range.value));
+    });
+
+    document.querySelectorAll("[data-example]").forEach((button) => {
+      button.addEventListener("click", () => {
+        input.value = button.dataset.example;
+        runSearch(input.value, Number(range.value));
+      });
+    });
+
+    document.getElementById("results").addEventListener("click", (event) => {
+      const target = event.target.closest("[data-id]");
+      if (target) openDetail(Number(target.dataset.id), currentStrategy);
+    });
+
+    const state = queryFromUrl();
+    if (state.k) {
+      range.value = String(Math.min(Number(range.max), Math.max(Number(range.min), state.k)));
+      rangeOut.textContent = range.value;
     }
-    renderSettings(data.fields || []);
-    el.settingsMsg.textContent = "Saved.";
-  } catch (err) {
-    el.settingsMsg.textContent = `Save failed: ${escapeHtml(err.message)}`;
-  }
-}
+    if (state.q) {
+      input.value = state.q;
+      runSearch(state.q, Number(range.value));
+    }
 
-el.form.addEventListener("submit", (e) => {
-  e.preventDefault();
-  runSearch(true);
-});
-el.topk.addEventListener("input", () => {
-  el.topkValue.textContent = el.topk.value;
-});
-el.split.addEventListener("change", () => {
-  if (state.data) renderResults(state.data);
-  syncUrl(false);
-});
-el.minscore.addEventListener("input", () => {
-  if (state.data) renderResults(state.data);
-  syncUrl(false);
-});
-el.hybrid.addEventListener("change", () => {
-  if (el.query.value.trim()) runSearch(true);
-});
-el.shareBtn.addEventListener("click", async () => {
-  syncUrl(false);
-  const url = location.href;
-  try {
-    await navigator.clipboard.writeText(url);
-    setStatus("Link copied to clipboard.", "warn");
-    setTimeout(() => setStatus(""), 1500);
-  } catch (err) {
-    setStatus(`Copy this link: ${escapeHtml(url)}`);
+    try {
+      const statuses = await api("/api/strategies");
+      const item = statuses.find((entry) => entry.key === currentStrategy);
+      const pill = document.getElementById("strategy-readiness");
+      if (pill) {
+        pill.classList.remove("ready", "unavailable");
+        pill.classList.add(item && item.ready ? "ready" : "unavailable");
+        pill.textContent = item && item.ready ? "ready" : "unavailable";
+        if (item && item.error) pill.title = item.error;
+      }
+      if (item && !item.ready) {
+        status(item.error || "This strategy is not built yet.", true);
+        document.getElementById("search-button").disabled = true;
+      }
+    } catch (error) {
+      status(error.message, true);
+    }
   }
-});
-el.loadMoreBtn.addEventListener("click", () => {
-  state.k = Math.min(MAX_RESULTS, state.k + PAGE_SIZE);
-  el.topk.value = state.k;
-  el.topkValue.textContent = state.k;
-  runSearch(false);
-});
-el.lightboxClose.addEventListener("click", closeLightbox);
-el.lightbox.addEventListener("click", (e) => {
-  if (e.target === el.lightbox) closeLightbox();
-});
-el.settingsBtn.addEventListener("click", openSettings);
-el.settingsClose.addEventListener("click", closeSettings);
-el.settingsReload.addEventListener("click", loadSettings);
-el.settingsSave.addEventListener("click", saveSettings);
-el.settingsModal.addEventListener("click", (e) => {
-  if (e.target === el.settingsModal) closeSettings();
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    closeLightbox();
-    closeSettings();
-  }
-});
 
-loadStats();
-applyUrlState();
-if (el.query.value.trim()) {
-  runSearch(false);
-} else {
-  el.query.focus();
-}
+  if (PAGE === "home") initHome();
+  if (PAGE === "search") initSearch();
+  if (PAGE === "compare") initDialog();
+})();

@@ -1,9 +1,9 @@
 """Runtime-editable settings, surfaced through the web UI.
 
-Only settings that are safe to change while the server is running (search
-behaviour and UI defaults) are editable. Build-time settings (model, index,
-gallery) are exposed read-only so the UI can show them. Editable values are
-persisted to ``data/settings.json`` and re-applied on startup.
+Only parameters that are safe to change while the server runs are editable:
+fusion weights, fetch multipliers, reranker switches and UI defaults. Build-time
+choices (models, index type, dataset) are read-only. Edits are persisted to
+``data/settings.json`` and re-applied at startup.
 """
 
 from __future__ import annotations
@@ -17,118 +17,189 @@ from tsr.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-SEARCH = "Search"
+STRATEGY = "Strategy B — CLIP + NLP"
+VLM = "Strategy C — VLM"
+BASELINE = "Strategy A — CLIP"
 INTERFACE = "Interface"
-MODEL = "Model (read-only)"
+MODEL = "Models (read-only)"
 INDEX = "Index (read-only)"
-GALLERY = "Gallery (read-only)"
 
 FIELDS: list[dict[str, Any]] = [
     {
-        "key": "search.hybrid",
-        "type": "bool",
-        "label": "Hybrid (CLIP + keyword)",
-        "group": SEARCH,
-        "editable": True,
-        "help": "Fuse dense CLIP scores with SQLite BM25 keyword scores.",
-    },
-    {
-        "key": "search.hybrid_alpha",
-        "type": "float",
-        "label": "Hybrid weight (alpha)",
-        "group": SEARCH,
-        "editable": True,
-        "min": 0.0,
-        "max": 1.0,
-        "step": 0.05,
-        "help": "Weight of the vector score; keyword gets (1 - alpha).",
-    },
-    {
-        "key": "search.use_prompt_ensemble",
-        "type": "bool",
-        "label": "Prompt ensemble",
-        "group": SEARCH,
-        "editable": True,
-        "help": "Average the query embedding over search.prompt_templates.",
-    },
-    {
-        "key": "search.prompt_templates",
-        "type": "list",
-        "label": "Prompt templates (one per line)",
-        "group": SEARCH,
-        "editable": True,
-        "help": "Used for prompt ensembling; use {} as the query placeholder.",
-    },
-    {
-        "key": "search.rerank",
-        "type": "enum",
-        "label": "Reranker",
-        "group": SEARCH,
-        "editable": True,
-        "choices": ["none", "caption", "cross-encoder"],
-        "help": "Re-score the top candidates. 'caption' uses CLIP on captions.",
-    },
-    {
-        "key": "search.rerank_top_n",
-        "type": "int",
-        "label": "Rerank top-N",
-        "group": SEARCH,
-        "editable": True,
-        "min": 1,
-        "max": 200,
-        "help": "How many first-stage candidates the reranker sees.",
-    },
-    {
-        "key": "search.rerank_alpha",
-        "type": "float",
-        "label": "Rerank weight",
-        "group": SEARCH,
-        "editable": True,
-        "min": 0.0,
-        "max": 1.0,
-        "step": 0.05,
-    },
-    {
-        "key": "search.translate",
-        "type": "bool",
-        "label": "Translate queries (CJK -> EN)",
-        "group": SEARCH,
-        "editable": True,
-        "help": "Translate non-Latin queries to English before encoding.",
-    },
-    {
         "key": "app.default_top_k",
         "type": "int",
-        "label": "Default results",
+        "label": "Default results per page",
         "group": INTERFACE,
         "editable": True,
         "min": 1,
         "max": 100,
     },
-    {"key": "model.name", "type": "str", "label": "Model", "group": MODEL, "editable": False},
     {
-        "key": "model.pretrained",
+        "key": "strategies.clip.prompt_ensemble",
+        "type": "bool",
+        "label": "Prompt ensemble",
+        "group": BASELINE,
+        "editable": True,
+        "help": "Average the CLIP text embedding over the prompt templates.",
+    },
+    {
+        "key": "strategies.clip_nlp.weights.clip",
+        "type": "float",
+        "label": "CLIP weight",
+        "group": STRATEGY,
+        "editable": True,
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+    },
+    {
+        "key": "strategies.clip_nlp.weights.doc",
+        "type": "float",
+        "label": "Dense annotation weight",
+        "group": STRATEGY,
+        "editable": True,
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+    },
+    {
+        "key": "strategies.clip_nlp.weights.bm25",
+        "type": "float",
+        "label": "BM25 weight",
+        "group": STRATEGY,
+        "editable": True,
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+        "help": "Weights are renormalised after disabled channels are dropped.",
+    },
+    {
+        "key": "strategies.clip_nlp.fetch_multiplier",
+        "type": "int",
+        "label": "Over-fetch multiplier",
+        "group": STRATEGY,
+        "editable": True,
+        "min": 1,
+        "max": 20,
+    },
+    {
+        "key": "strategies.clip_nlp.expand",
+        "type": "bool",
+        "label": "Lexicon query expansion",
+        "group": STRATEGY,
+        "editable": True,
+        "help": "Expand known meme phrases for the BM25 signal only.",
+    },
+    {
+        "key": "strategies.clip_nlp.expansion_weight",
+        "type": "float",
+        "label": "Expansion weight",
+        "group": STRATEGY,
+        "editable": True,
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+    },
+    {
+        "key": "strategies.clip_nlp.rerank.enabled",
+        "type": "bool",
+        "label": "Cross-encoder rerank",
+        "group": STRATEGY,
+        "editable": True,
+    },
+    {
+        "key": "strategies.clip_nlp.rerank.top_n",
+        "type": "int",
+        "label": "Rerank candidates",
+        "group": STRATEGY,
+        "editable": True,
+        "min": 1,
+        "max": 200,
+    },
+    {
+        "key": "strategies.clip_nlp.rerank.alpha",
+        "type": "float",
+        "label": "Rerank weight",
+        "group": STRATEGY,
+        "editable": True,
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+    },
+    {
+        "key": "strategies.vlm.clip_weight",
+        "type": "float",
+        "label": "CLIP fusion weight",
+        "group": VLM,
+        "editable": True,
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+        "help": "0 = pure VLM text retrieval; 0.2 = VLM + CLIP visual signal.",
+    },
+    {
+        "key": "strategies.vlm.fetch_multiplier",
+        "type": "int",
+        "label": "Over-fetch multiplier",
+        "group": VLM,
+        "editable": True,
+        "min": 1,
+        "max": 20,
+    },
+    {
+        "key": "strategies.vlm.rerank.enabled",
+        "type": "bool",
+        "label": "Cross-encoder rerank",
+        "group": VLM,
+        "editable": True,
+    },
+    {
+        "key": "models.clip.name",
         "type": "str",
-        "label": "Pretrained",
+        "label": "CLIP backbone",
         "group": MODEL,
         "editable": False,
     },
-    {"key": "model.backend", "type": "str", "label": "Backend", "group": MODEL, "editable": False},
-    {"key": "model.device", "type": "str", "label": "Device", "group": MODEL, "editable": False},
-    {"key": "index.type", "type": "str", "label": "Index type", "group": INDEX, "editable": False},
-    {"key": "gallery.source", "type": "str", "label": "Source", "group": GALLERY, "editable": False},
     {
-        "key": "gallery.max_images",
-        "type": "int",
-        "label": "Max images",
-        "group": GALLERY,
+        "key": "models.clip.pretrained",
+        "type": "str",
+        "label": "CLIP pretrained",
+        "group": MODEL,
         "editable": False,
     },
     {
-        "key": "gallery.image_max_side",
-        "type": "int",
-        "label": "Image max side",
-        "group": GALLERY,
+        "key": "models.text.name",
+        "type": "str",
+        "label": "Text encoder",
+        "group": MODEL,
+        "editable": False,
+    },
+    {
+        "key": "models.vlm.model",
+        "type": "str",
+        "label": "VLM",
+        "group": MODEL,
+        "editable": False,
+    },
+    {
+        "key": "models.vlm.backend",
+        "type": "str",
+        "label": "VLM backend",
+        "group": MODEL,
+        "editable": False,
+    },
+    {
+        "key": "index.type",
+        "type": "str",
+        "label": "Index type",
+        "group": INDEX,
+        "editable": False,
+    },
+    {
+        "key": "dataset.name",
+        "type": "str",
+        "label": "Dataset",
+        "group": INDEX,
         "editable": False,
     },
 ]
@@ -149,6 +220,8 @@ def _set(cfg: AttrDict, key: str, value: Any) -> None:
     parts = key.split(".")
     node: Any = cfg
     for part in parts[:-1]:
+        if not isinstance(node.get(part), dict):
+            node[part] = AttrDict()
         node = node[part]
     node[parts[-1]] = value
 
@@ -181,7 +254,7 @@ def validate(field: dict[str, Any], value: Any) -> Any:
     value = coerce(field, value)
     lo = field.get("min")
     hi = field.get("max")
-    if lo is not None and value < lo or hi is not None and value > hi:
+    if (lo is not None and value < lo) or (hi is not None and value > hi):
         raise ValueError(f"{field['key']}: must be between {lo} and {hi}")
     return value
 
@@ -196,7 +269,7 @@ def get_settings(cfg: AttrDict) -> list[dict[str, Any]]:
 
 
 def apply_settings(cfg: AttrDict, updates: dict[str, Any]) -> dict[str, Any]:
-    """Validate all edits first, then apply them in-place atomically."""
+    """Validate every edit first, then apply them in-place atomically."""
     resolved: dict[str, Any] = {}
     for key, raw in updates.items():
         field = _SPEC_BY_KEY.get(key)

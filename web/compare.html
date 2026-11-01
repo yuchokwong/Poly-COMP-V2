@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compare — Meme Retrieval</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/app.js" defer></script>
+  <script src="/static/compare.js" defer></script>
+</head>
+<body data-page="compare">
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">◉</span> Meme Retrieval</a>
+    <nav class="nav">
+      <a href="/clip">CLIP</a>
+      <a href="/clip-nlp">CLIP + NLP</a>
+      <a href="/vlm">VLM</a>
+      <a href="/compare" aria-current="page">Compare</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/settings">Settings</a>
+    </nav>
+  </header>
+
+  <main class="wrap wide">
+    <section class="page-head">
+      <div>
+        <p class="eyebrow">side by side</p>
+        <h1>One query, three pipelines</h1>
+        <p class="lede">The same gallery and the same query text. Images that appear in more
+          than one column are outlined so agreement is visible at a glance.</p>
+      </div>
+      <div class="page-head-side">
+        <span class="pill" id="compare-mode">ready</span>
+      </div>
+    </section>
+
+    <section class="search-panel">
+      <form id="compare-form" class="search-form" role="search">
+        <label class="sr-only" for="query">Query</label>
+        <input id="query" name="q" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Describe the meme you are looking for…" required>
+        <div class="search-controls">
+          <label class="range-label" for="top-k">Per column <output id="top-k-value">10</output></label>
+          <input id="top-k" name="k" type="range" min="3" max="20" value="10">
+          <button class="button primary" type="submit">Compare</button>
+        </div>
+      </form>
+      <div class="query-ideas">
+        <button type="button" data-example="a meme about pretending to understand in a meeting">pretending in a meeting</button>
+        <button type="button" data-example="distracted boyfriend looking at another woman">distracted boyfriend</button>
+        <button type="button" data-example="a dog sitting calmly while everything is on fire">this is fine</button>
+      </div>
+    </section>
+
+    <div class="status-line" id="status" role="status" aria-live="polite"></div>
+
+    <section id="columns" class="compare-grid" aria-label="Strategy comparison">
+      <article class="compare-column" data-column="clip">
+        <header><h2>CLIP only</h2><span class="pill" data-column-status>idle</span></header>
+        <p class="column-meta" data-column-meta>Visual similarity only.</p>
+        <div class="compare-results" data-column-results></div>
+      </article>
+      <article class="compare-column" data-column="clip_nlp">
+        <header><h2>CLIP + NLP</h2><span class="pill" data-column-status>idle</span></header>
+        <p class="column-meta" data-column-meta>CLIP + annotation vectors + BM25.</p>
+        <div class="compare-results" data-column-results></div>
+      </article>
+      <article class="compare-column" data-column="vlm">
+        <header><h2>VLM</h2><span class="pill" data-column-status>idle</span></header>
+        <p class="column-meta" data-column-meta>Generated descriptions (+ optional CLIP).</p>
+        <div class="compare-results" data-column-results></div>
+      </article>
+    </section>
+
+    <section class="section" id="agreement" hidden>
+      <h2>Agreement</h2>
+      <p id="agreement-summary" class="lede"></p>
+    </section>
+  </main>
+
+  <dialog id="detail-dialog" class="detail-dialog">
+    <button class="dialog-close" type="button" data-close aria-label="Close">×</button>
+    <div id="detail-body" class="detail-body"></div>
+  </dialog>
+
+  <footer class="footer">
+    <span>Meme-Cap · research use only</span>
+    <span><a href="/evaluation">full evaluation →</a></span>
+  </footer>
+</body>
+</html>

@@ -1,4 +1,4 @@
-"""Configuration loading.
+"""Configuration loading and filesystem path helpers.
 
 Layering (lowest to highest precedence):
     1. configs/default.yaml
@@ -99,13 +99,7 @@ def _to_attr(obj: Any) -> Any:
 
 
 def load_config(path: str | Path | None = None) -> AttrDict:
-    """Load and validate configuration into an attribute-accessible dict.
-
-    ``configs/default.yaml`` is always the base; an optional override file (given
-    by ``path`` or ``$TSR_CONFIG``) is deep-merged on top of it, then ``TSR_*``
-    environment variables on top of that. Override files therefore only need the
-    keys they change (see ``configs/lite.yaml``).
-    """
+    """Load and validate configuration into an attribute-accessible dict."""
     raw: dict[str, Any] = {}
     if DEFAULT_CONFIG_PATH.exists():
         raw = yaml.safe_load(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")) or {}
@@ -147,30 +141,6 @@ def images_dir(cfg: AttrDict) -> Path:
     return data_dir(cfg) / cfg.paths.images_subdir
 
 
-def db_path(cfg: AttrDict) -> Path:
-    return data_dir(cfg) / cfg.paths.db_name
-
-
-def index_path(cfg: AttrDict) -> Path:
-    return data_dir(cfg) / cfg.paths.index_name
-
-
-def ids_path(cfg: AttrDict) -> Path:
-    return data_dir(cfg) / cfg.paths.ids_name
-
-
-def manifest_path(cfg: AttrDict) -> Path:
-    return data_dir(cfg) / cfg.paths.manifest_name
-
-
-def eval_queries_path(cfg: AttrDict) -> Path:
-    return data_dir(cfg) / cfg.paths.eval_name
-
-
-def report_path(cfg: AttrDict) -> Path:
-    return data_dir(cfg) / cfg.paths.report_name
-
-
 def cache_dir(cfg: AttrDict) -> Path:
     return Path(cfg.paths.cache_dir)
 
@@ -179,8 +149,90 @@ def web_dir(cfg: AttrDict) -> Path:
     return Path(cfg.root) / cfg.paths.web_dir
 
 
-def local_root(cfg: AttrDict) -> Path:
-    root = Path(cfg.gallery.local_root)
-    if not root.is_absolute():
-        root = Path(cfg.root) / root
-    return root
+def db_path(cfg: AttrDict) -> Path:
+    return data_dir(cfg) / cfg.paths.db_name
+
+
+def manifest_path(cfg: AttrDict) -> Path:
+    return data_dir(cfg) / cfg.paths.manifest_name
+
+
+def raw_dir(cfg: AttrDict) -> Path:
+    return data_dir(cfg) / "raw"
+
+
+def raw_images_dir(cfg: AttrDict) -> Path:
+    return raw_dir(cfg) / "memecap" / "images"
+
+
+def raw_captions_dir(cfg: AttrDict) -> Path:
+    return raw_dir(cfg) / "memecap" / "caption"
+
+
+def archive_path(cfg: AttrDict) -> Path:
+    return raw_dir(cfg) / cfg.dataset.archive_name
+
+
+def index_root(cfg: AttrDict) -> Path:
+    return data_dir(cfg) / cfg.paths.index_subdir
+
+
+def strategy_index_dir(cfg: AttrDict, key: str) -> Path:
+    return index_root(cfg) / key
+
+
+def vlm_cache_path(cfg: AttrDict) -> Path:
+    return data_dir(cfg) / cfg.models.vlm.cache_file
+
+
+_VLM_BACKEND_ALIASES = {"qwen": "qwen2_5_vl", "qwen2.5-vl": "qwen2_5_vl"}
+_VLM_BACKEND_DISABLED = {"none", "disabled", "off", ""}
+
+
+def canonical_vlm_backend(value: object) -> str | None:
+    """Canonical backend name, or None when the VLM is disabled.
+
+    ``encoders.vlm`` accepts aliases but persists ``QwenVLBackend.name``; every
+    reader of ``vlm_docs`` must compare against that same canonical string.
+    """
+    name = str("qwen2_5_vl" if value is None else value).strip().lower()
+    if name in _VLM_BACKEND_DISABLED:
+        return None
+    return _VLM_BACKEND_ALIASES.get(name, name)
+
+
+def vlm_provenance(cfg: AttrDict) -> dict[str, str | bool | None]:
+    """Filters that pin VLM rows to the generator the config currently names.
+
+    Stale descriptions from an earlier model or prompt must never be served or
+    counted as coverage, so every read of ``vlm_docs`` filters with this.
+    ``enabled`` is False when ``models.vlm.backend`` disables captioning; the
+    filter values are then unset and callers must refuse to serve VLM output.
+    """
+    vlm = cfg.models.get("vlm") or {}
+    backend = canonical_vlm_backend(vlm.get("backend", "qwen2_5_vl"))
+    model = vlm.get("model")
+    return {
+        "backend": backend,
+        "model": str(model) if model else None,
+        "prompt_version": str(vlm.get("prompt_version", "v1")),
+        "enabled": backend is not None,
+    }
+
+
+def vlm_doc_filters(cfg: AttrDict) -> dict[str, str | None]:
+    """Keyword filters for ``store`` VLM readers (no ``enabled`` flag)."""
+    provenance = vlm_provenance(cfg)
+    return {key: provenance[key] for key in ("backend", "model", "prompt_version")}
+
+
+def eval_dir(cfg: AttrDict) -> Path:
+    return data_dir(cfg) / cfg.paths.eval_dir
+
+
+def reports_dir(cfg: AttrDict) -> Path:
+    return data_dir(cfg) / cfg.paths.reports_dir
+
+
+def settings_path(cfg: AttrDict) -> Path:
+    return data_dir(cfg) / "settings.json"

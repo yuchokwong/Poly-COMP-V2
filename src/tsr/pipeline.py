@@ -1,268 +1,425 @@
-"""Indexing and evaluation pipelines (used by the CLI)."""
+"""Dataset preparation and artifact build pipelines."""
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
 from tqdm import tqdm
 
+from tsr.artifacts import config_hash, dataset_hash, read_meta, write_meta
 from tsr.config import (
     AttrDict,
     cache_dir,
     db_path,
-    eval_queries_path,
-    ids_path,
     images_dir,
-    index_path,
-    report_path,
+    manifest_path,
+    strategy_index_dir,
+    vlm_doc_filters,
+    vlm_provenance,
 )
-from tsr.db import GalleryDB
-from tsr.embedder import Embedder
-from tsr.evaluate import (
-    bootstrap_ci,
-    build_eval_queries_from_manifest,
-    evaluate_queries,
-    load_queries,
-    paired_bootstrap_test,
-    per_query_metrics,
-    save_queries,
-)
-from tsr.gallery import read_manifest
+from tsr.encoders.clip import ClipEncoder
+from tsr.encoders.text import TextEncoder
 from tsr.index import VectorIndex
 from tsr.logging_utils import get_logger
+from tsr.manifest import content_hash, read_manifest
+from tsr.memecap import download_annotations, download_archive, extract_archive, prepare_gallery
+from tsr.store import GalleryStore
 
 logger = get_logger(__name__)
 
 
-def build_index(cfg: AttrDict) -> int:
-    """Embed every gallery image and build the FAISS index + metadata DB."""
-    manifest = read_manifest(cfg)
+def ensure_dataset(cfg: AttrDict, limit: int | None = None, force: bool = False) -> int:
+    count = prepare_gallery(cfg, limit=limit, force=force)
+    if count <= 0:
+        raise RuntimeError(
+            "No manifest records. Run `python -m tsr prepare` to download Meme-Cap."
+        )
+    return count
+
+
+def prepare_dataset(
+    cfg: AttrDict,
+    source: str = "hf",
+    limit: int | None = None,
+    force: bool = False,
+    skip_download: bool = False,
+) -> int:
+    if not skip_download:
+        download_annotations(cfg, force=force)
+        download_archive(cfg, source=source, force=force)
+        extract_archive(cfg, force=force)
+    return ensure_dataset(cfg, limit=limit, force=force)
+
+
+def _dataset_hash(cfg: AttrDict) -> str:
+    return dataset_hash(manifest_path(cfg))
+
+
+def _index_layout(cfg: AttrDict) -> str:
+    return str(cfg.index.get("type", "flat"))
+
+
+# --------------------------------------------------------------------------- #
+# Gallery + CLIP image index
+# --------------------------------------------------------------------------- #
+def open_store(cfg: AttrDict, reset: bool = False) -> GalleryStore:
+    return GalleryStore(db_path(cfg), reset=reset)
+
+
+def build_gallery(cfg: AttrDict, force: bool = False) -> int:
+    """Insert the manifest into SQLite and build the shared CLIP image index."""
+    manifest = read_manifest(manifest_path(cfg))
     if not manifest:
-        raise RuntimeError("Manifest is empty. Run `tsr download` first.")
+        raise RuntimeError("Manifest is empty. Run `python -m tsr prepare` first.")
 
-    images_root = images_dir(cfg)
-    embedder = Embedder(cfg)
-    batch_size = int(cfg.model.batch_size)
+    store = GalleryStore(db_path(cfg), reset=force)
+    try:
+        if store.count() == 0 or force:
+            if force:
+                store.clear("images")
+            # Primary keys are assigned again on insert, both on a forced rebuild
+            # and when inserting into an empty table; thumbnails are keyed by pk,
+            # so old files would be served for the wrong images.
+            thumbs = cache_dir(cfg) / "thumbs"
+            if thumbs.exists():
+                shutil.rmtree(thumbs, ignore_errors=True)
+                logger.info("Cleared thumbnail cache before rebuilding the gallery")
+            store.insert_images(manifest)
+        records = store.iter_all()
+        if not records:
+            raise RuntimeError("Gallery database is empty after insertion.")
+        manifest_ids = [rec.image_id for rec in manifest]
+        if [rec.image_id for rec in records] != manifest_ids:
+            raise RuntimeError(
+                "Gallery database does not match the manifest. Rerun "
+                "`python -m tsr build --strategy clip --force` to rebuild it."
+            )
+        enriched = store.enrich({rec.id: rec for rec in records})
+        if content_hash(enriched.values()) != content_hash(manifest):
+            raise RuntimeError(
+                "Gallery rows were inserted from a different version of the "
+                "manifest: image ids match but annotations differ. Rerun "
+                "`python -m tsr build --strategy clip --force` to rebuild it."
+            )
+        ids = [rec.id for rec in records]
+        if ids != list(range(ids[0], ids[0] + len(ids))):
+            raise RuntimeError(f"images.id is not contiguous: {ids[:3]} ... {ids[-3:]}")
 
-    db = GalleryDB(db_path(cfg))
-    db.clear()
+        encoder = ClipEncoder(cfg)
+        root = images_dir(cfg)
+        vectors: list[np.ndarray] = []
+        batch_size = int(cfg.models.clip.get("batch_size", 64))
+        for start in tqdm(range(0, len(records), batch_size), desc="CLIP embedding"):
+            batch = records[start : start + batch_size]
+            vectors.append(encoder.encode_images([root / rec.path for rec in batch]))
+        matrix = np.concatenate(vectors, axis=0).astype(np.float32)
+        if matrix.shape[0] != len(ids):
+            raise RuntimeError(
+                f"CLIP produced {matrix.shape[0]} vectors for {len(ids)} images; "
+                "refusing to write a misaligned index."
+            )
+        zeros = int((np.linalg.norm(matrix, axis=1) == 0).sum())
+        if zeros:
+            logger.warning("%d images produced zero vectors (unreadable files)", zeros)
 
-    all_vectors: list[np.ndarray] = []
-    all_ids: list[int] = []
+        index_type = _index_layout(cfg)
+        index = VectorIndex(
+            dim=matrix.shape[1],
+            index_type=index_type,
+            nlist=int(cfg.index.get("nlist", 1024)),
+            nprobe=int(cfg.index.get("nprobe", 32)),
+            m=int(cfg.index.get("m", 32)),
+            ef_search=int(cfg.index.get("ef_search", 64)),
+        )
+        index.add(matrix, np.asarray(ids, dtype=np.int64))
+        out_dir = strategy_index_dir(cfg, "clip")
+        index.save(out_dir / "image.faiss", out_dir / "image_ids.npy")
+        write_meta(
+            out_dir,
+            {
+                "kind": "clip_image",
+                "strategy": "clip",
+                "model": f"{cfg.models.clip.name}/{cfg.models.clip.pretrained}",
+                "dim": int(matrix.shape[1]),
+                "count": int(matrix.shape[0]),
+                "index_type": index.index_type,
+                "dataset_hash": _dataset_hash(cfg),
+                "config_hash": config_hash(cfg.models.clip),
+            },
+        )
+        logger.info("CLIP index built: %d vectors (dim=%d) in %s",
+                    index.size, matrix.shape[1], out_dir)
+        return index.size
+    finally:
+        store.close()
 
-    for start in tqdm(range(0, len(manifest), batch_size), desc="embedding"):
-        batch = manifest[start : start + batch_size]
-        paths = [images_root / rec["path"] for rec in batch]
-        vectors = embedder.encode_images(paths)
-        rows = []
-        kept_vectors = []
-        for rec, vec in zip(batch, vectors, strict=False):
-            if not np.any(vec):  # failed image produced a zero vector
-                continue
-            rows.append(rec)
-            kept_vectors.append(vec)
-        if not rows:
-            continue
-        ids = db.insert_many(rows)
-        all_vectors.append(np.asarray(kept_vectors, dtype=np.float32))
-        all_ids.extend(ids)
 
-    if not all_vectors:
-        raise RuntimeError("No images were embedded successfully.")
+def build_clip(cfg: AttrDict, force: bool = False) -> int:
+    return build_gallery(cfg, force=force)
 
-    matrix = np.concatenate(all_vectors, axis=0)
-    ids_arr = np.asarray(all_ids, dtype=np.int64)
-    logger.info("Embedded %d images (dim=%d).", matrix.shape[0], matrix.shape[1])
 
-    index_type = str(cfg.index.type)
-    if index_type == "auto":
-        # Exact flat search stays cheap in RAM (512B/vector) and latency well
-        # under 100 ms up to a few hundred thousand images, so only switch to an
-        # approximate index once it actually pays off.
-        n = matrix.shape[0]
-        flat_max = int(cfg.index.get("auto_flat_max", 300_000))
-        ivf_max = int(cfg.index.get("auto_ivf_max", 1_000_000))
-        if n <= flat_max:
-            index_type = "flat"
-        elif n <= ivf_max:
-            index_type = "ivf"
-        else:
-            index_type = "pq"
-        logger.info("index.type=auto -> '%s' for %d vectors.", index_type, n)
+# --------------------------------------------------------------------------- #
+# Strategy docs + dense indexes
+# --------------------------------------------------------------------------- #
+def _annotation_fields(rec) -> tuple[str, str, str, str]:
+    scene = " / ".join(rec.img_captions)
+    meaning = " / ".join(rec.meme_captions)
+    metaphor = "; ".join(
+        f"{item['metaphor']} means {item['meaning']}"
+        for item in rec.metaphors
+        if str(item.get("meaning", "")).strip().lower()
+        != "not related to the meme context"
+    )
+    return scene, meaning, metaphor, rec.title or ""
 
+
+def _embed_docs(
+    cfg: AttrDict,
+    encoder: TextEncoder,
+    docs: list[str],
+    out_dir: Path,
+    ids: list[int],
+    meta: dict,
+) -> int:
+    if not docs:
+        raise RuntimeError(f"No documents to embed for {out_dir}; nothing to index.")
+    vectors: list[np.ndarray] = []
+    batch_size = int(cfg.models.text.get("batch_size", 64))
+    for start in tqdm(range(0, len(docs), batch_size), desc="doc embedding"):
+        vectors.append(encoder.encode(docs[start : start + batch_size]))
+    matrix = np.concatenate(vectors, axis=0).astype(np.float32)
+    if matrix.shape[0] != len(ids):
+        raise RuntimeError(
+            f"Encoded {matrix.shape[0]} documents for {len(ids)} ids; "
+            "refusing to write a misaligned index."
+        )
     index = VectorIndex(
         dim=matrix.shape[1],
-        index_type=index_type,
+        index_type=_index_layout(cfg),
         nlist=int(cfg.index.get("nlist", 1024)),
         nprobe=int(cfg.index.get("nprobe", 32)),
         m=int(cfg.index.get("m", 32)),
         ef_search=int(cfg.index.get("ef_search", 64)),
     )
-    index.add(matrix, ids_arr)
-    index.save(index_path(cfg), ids_path(cfg))
-    logger.info("Index saved to %s (%d vectors).", index_path(cfg), index.size)
-    db.close()
+    index.add(matrix, np.asarray(ids, dtype=np.int64))
+    index.save(out_dir / "doc.faiss", out_dir / "doc_ids.npy")
+    write_meta(
+        out_dir,
+        {
+            "kind": "doc_index",
+            "dim": int(matrix.shape[1]),
+            "count": int(matrix.shape[0]),
+            "index_type": index.index_type,
+            "dataset_hash": _dataset_hash(cfg),
+            **meta,
+        },
+    )
     return index.size
 
 
+def _assert_gallery_matches_manifest(cfg: AttrDict, store: GalleryStore) -> None:
+    """Refuse to attach strategy artifacts to a gallery from another dataset.
+
+    Only ``build_gallery`` inserts rows; if the manifest changed since, the
+    strategy would index documents for one image set and be searched against
+    another gallery, silently misaligning every row id.
+    """
+    manifest = read_manifest(manifest_path(cfg))
+    if not manifest:
+        raise RuntimeError("Manifest is empty. Run `python -m tsr prepare` first.")
+    rows = store.iter_all()
+    stored = [rec.image_id for rec in rows]
+    expected = [rec.image_id for rec in manifest]
+    if stored != expected:
+        raise RuntimeError(
+            f"Gallery has {len(stored)} images but the manifest has {len(expected)} "
+            "and they differ. Run `python -m tsr build --strategy clip --force` first."
+        )
+    enriched = store.enrich({rec.id: rec for rec in rows})
+    if content_hash(enriched.values()) != content_hash(manifest):
+        raise RuntimeError(
+            "Gallery annotations are out of date with the manifest (same ids, "
+            "different text). Run `python -m tsr build --strategy clip --force` first."
+        )
+
+
+def build_clip_nlp(cfg: AttrDict, force: bool = False) -> int:
+    store = GalleryStore(db_path(cfg))
+    try:
+        _assert_gallery_matches_manifest(cfg, store)
+        records = store.enrich(store.get_many([rec.id for rec in store.iter_all()]))
+        if not records:
+            raise RuntimeError("Gallery is empty. Run `python -m tsr build --strategy clip` first.")
+        rows = []
+        nlp_rows = []
+        for pk in sorted(records):
+            scene, meaning, metaphor, title = _annotation_fields(records[pk])
+            dense = (
+                f"scene: {scene}\nmeaning: {meaning}\n"
+                f"metaphor: {metaphor}\ntitle: {title}"
+            )
+            rows.append((pk, dense))
+            nlp_rows.append((pk, scene, meaning, metaphor, title))
+        store.write_nlp_docs(nlp_rows)
+        store.write_strategy_docs("clip_nlp", rows)
+        encoder = TextEncoder(cfg)
+        out_dir = strategy_index_dir(cfg, "clip_nlp")
+        size = _embed_docs(
+            cfg,
+            encoder,
+            [text for _, text in rows],
+            out_dir,
+            [pk for pk, _ in rows],
+            {
+                "strategy": "clip_nlp",
+                "model": str(cfg.models.text.name),
+                "config_hash": config_hash(cfg.strategies.clip_nlp),
+            },
+        )
+        logger.info("Strategy B doc index built: %d documents", size)
+        return size
+    finally:
+        store.close()
+
+
+def build_vlm(cfg: AttrDict, force: bool = False) -> int:
+    store = GalleryStore(db_path(cfg))
+    try:
+        _assert_gallery_matches_manifest(cfg, store)
+        provenance = vlm_provenance(cfg)
+        if not provenance["enabled"]:
+            raise RuntimeError(
+                "models.vlm.backend is 'none'. Set a backend before building strategy C."
+            )
+        docs = store.iter_vlm_docs(**vlm_doc_filters(cfg))
+        if not docs:
+            raise RuntimeError(
+                "No VLM descriptions for the configured backend/model/prompt_version. "
+                "Run `python -m tsr vlm-caption` first, or set models.vlm.backend=none "
+                "to disable strategy C."
+            )
+        rows = [(int(doc["image_pk"]), str(doc["doc_text"])) for doc in docs]
+        rows = [(pk, text) for pk, text in rows if text]
+        if not rows:
+            raise RuntimeError("VLM descriptions are all empty; regenerate them.")
+        docs = [doc for doc in docs if doc.get("doc_text")]
+        store.write_strategy_docs("vlm", rows)
+        encoder = TextEncoder(cfg)
+        out_dir = strategy_index_dir(cfg, "vlm")
+        size = _embed_docs(
+            cfg,
+            encoder,
+            [text for _, text in rows],
+            out_dir,
+            [pk for pk, _ in rows],
+            {
+                "strategy": "vlm",
+                "model": str(cfg.models.text.name),
+                "vlm_model": provenance["model"],
+                "vlm_backend": provenance["backend"],
+                "prompt_version": provenance["prompt_version"],
+                "config_hash": config_hash(cfg.strategies.vlm),
+            },
+        )
+        logger.info("Strategy C doc index built: %d documents", size)
+        return size
+    finally:
+        store.close()
+
+
+def build(cfg: AttrDict, strategy: str = "all", force: bool = False) -> dict[str, int]:
+    strategy = strategy.lower()
+    if strategy in {"a", "gallery"}:
+        strategy = "clip"
+    if strategy == "b":
+        strategy = "clip_nlp"
+    if strategy == "c":
+        strategy = "vlm"
+
+    results: dict[str, int] = {}
+    if strategy in {"clip", "all"}:
+        results["clip"] = build_clip(cfg, force=force)
+    if strategy in {"clip_nlp", "all"}:
+        if "clip" not in results and not strategy_index_dir(cfg, "clip").exists():
+            raise RuntimeError("Build strategy clip before clip_nlp.")
+        results["clip_nlp"] = build_clip_nlp(cfg, force=force)
+    if strategy in {"vlm", "all"}:
+        if str(cfg.models.vlm.get("backend", "qwen2_5_vl")).lower() == "none":
+            logger.warning("VLM backend disabled; skipping strategy C.")
+        else:
+            try:
+                results["vlm"] = build_vlm(cfg, force=force)
+            except RuntimeError as exc:
+                if strategy == "all":
+                    logger.warning("Skipping strategy C: %s", exc)
+                else:
+                    raise
+    if not results:
+        raise ValueError(f"Nothing built for strategy={strategy!r}")
+    return results
+
+
+# --------------------------------------------------------------------------- #
+# Thumbnails / stats
+# --------------------------------------------------------------------------- #
 def pregenerate_thumbnails(cfg: AttrDict, size: int = 480) -> int:
-    """Pre-render cached thumbnails so the first UI request is not blocked."""
     from PIL import Image
 
-    db = GalleryDB(db_path(cfg))
-    images_root = images_dir(cfg)
+    store = GalleryStore(db_path(cfg))
+    root = images_dir(cfg)
     out_root = cache_dir(cfg) / "thumbs" / str(size)
     out_root.mkdir(parents=True, exist_ok=True)
     made = 0
-    records = db.iter_all()
-    for rec in tqdm(records, desc=f"thumbs@{size}"):
-        dest = out_root / f"{rec.id}.jpg"
-        if dest.exists():
-            continue
-        src = images_root / rec.path
-        if not src.exists():
-            continue
-        try:
-            with Image.open(src) as img:
-                img = img.convert("RGB")
-                img.thumbnail((size, size), Image.LANCZOS)
-                img.save(dest, "JPEG", quality=80, optimize=True)
-            made += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Thumbnail failed for %s: %s", rec.image_id, exc)
-    db.close()
+    try:
+        for rec in tqdm(store.iter_all(), desc=f"thumbs@{size}"):
+            dest = out_root / f"{rec.id}.jpg"
+            if dest.exists():
+                continue
+            src = root / rec.path
+            if not src.exists():
+                continue
+            try:
+                with Image.open(src) as img:
+                    img = img.convert("RGB")
+                    img.thumbnail((size, size), Image.LANCZOS)
+                    img.save(dest, "JPEG", quality=80, optimize=True)
+                made += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Thumbnail failed for %s: %s", rec.image_id, exc)
+    finally:
+        store.close()
     logger.info("Generated %d thumbnails at %s", made, out_root)
     return made
 
 
-def make_eval_set(cfg: AttrDict, num_queries: int | None = None) -> Path:
-    manifest = read_manifest(cfg)
-    num_queries = num_queries or int(cfg.eval.num_queries)
-    queries = build_eval_queries_from_manifest(
-        manifest, num_queries=num_queries, seed=int(cfg.eval.get("seed", 42))
-    )
-    out = eval_queries_path(cfg)
-    save_queries(queries, out)
-    logger.info("Wrote %d evaluation queries to %s", len(queries), out)
-    return out
+def stats(cfg: AttrDict) -> dict:
+    path = db_path(cfg)
+    if not path.exists():
+        return {"ready": False, "error": "database missing"}
+    try:
+        store = GalleryStore(path)
+    except Exception as exc:  # noqa: BLE001 - old schema is a normal state
+        return {"ready": False, "error": str(exc)}
+    try:
+        out = {
+            "ready": True,
+            "num_images": store.count(),
+            "vlm_docs": store.vlm_count(**vlm_doc_filters(cfg)),
+            "strategies": {},
+            "manifest": str(manifest_path(cfg)),
+        }
+        for key in ("clip", "clip_nlp", "vlm"):
+            out["strategies"][key] = read_meta(strategy_index_dir(cfg, key))
+        return out
+    finally:
+        store.close()
 
 
-def run_evaluation(cfg: AttrDict, queries_file: str | Path | None = None) -> dict:
-    from tsr.api import RetrievalService
-
-    queries_path = Path(queries_file) if queries_file else eval_queries_path(cfg)
-    if not queries_path.exists():
-        logger.info("Evaluation queries not found; generating them now.")
-        make_eval_set(cfg)
-    queries = load_queries(queries_path)
-
-    service = RetrievalService(cfg)
-    if not service.ready:
-        raise RuntimeError(service.load_error or "Retrieval service is not ready.")
-
-    top_k = list(cfg.eval.top_k)
-    limit = max(top_k)
-
-    def retriever(query: str, k: int) -> list[str]:
-        resp = service.search(query, k)
-        return [r.image_id for r in resp.results]
-
-    report = evaluate_queries(retriever, queries, top_k=top_k, max_rank=limit)
-    report["config"] = {
-        "model": str(cfg.model.name),
-        "pretrained": str(cfg.model.pretrained),
-        "index_type": str(service.index.index_type if service.index else cfg.index.type),
-        "hybrid": bool(cfg.search.hybrid),
-        "num_queries": len(queries),
-    }
-
-    out = report_path(cfg)
-    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    logger.info("Evaluation results (top_k=%s):", top_k)
-    for name, value in report["metrics"].items():
-        if isinstance(value, float):
-            logger.info("  %-16s %.4f", name, value)
-        else:
-            logger.info("  %-16s %s", name, value)
-    logger.info("Full report written to %s", out)
-    return report
-
-
-DEFAULT_SEARCH_VARIANTS: list[tuple[str, dict]] = [
-    ("dense", {}),
-    ("hybrid", {"hybrid": True}),
-    ("dense+ensemble", {"use_prompt_ensemble": True}),
-    ("dense+caption-rerank", {"rerank": "caption"}),
-]
-
-
-def compare_search_configs(
-    cfg: AttrDict,
-    queries_file: str | Path | None = None,
-    n_boot: int = 1000,
-    variants: list[tuple[str, dict]] | None = None,
-) -> list[dict]:
-    """Evaluate several search configurations with bootstrap confidence intervals."""
-    from tsr.api import RetrievalService
-
-    queries_path = Path(queries_file) if queries_file else eval_queries_path(cfg)
-    if not queries_path.exists():
-        make_eval_set(cfg)
-    queries = load_queries(queries_path)
-
-    service = RetrievalService(cfg)
-    if not service.ready:
-        raise RuntimeError(service.load_error or "Retrieval service is not ready.")
-
-    top_k = list(cfg.eval.top_k)
-    variants = variants or DEFAULT_SEARCH_VARIANTS
-    logger.info("Comparing %d search configs on %d queries (n_boot=%d) ...",
-                len(variants), len(queries), n_boot)
-
-    rows: list[dict] = []
-    baseline_values: dict[str, list[float]] | None = None
-    for name, overrides in variants:
-        saved = {k: (k in cfg.search, cfg.search.get(k)) for k in overrides}
-        for key, value in overrides.items():
-            cfg.search[key] = value
-        service._query_cache.clear()
-
-        def retriever(query: str, k: int) -> list[str]:
-            return [r.image_id for r in service.search(query, k).results]
-
-        values = per_query_metrics(retriever, queries, top_k=top_k)
-        ci = bootstrap_ci(values, n_boot=n_boot, seed=int(cfg.eval.get("seed", 42)))
-        if baseline_values is None:
-            baseline_values = values
-            delta, dlo, dhi, p = (0.0, 0.0, 0.0, 1.0)
-        else:
-            delta, dlo, dhi, p = paired_bootstrap_test(
-                baseline_values["mAP"], values["mAP"], n_boot=n_boot
-            )
-        rows.append(
-            {
-                "name": name,
-                "metrics": {k: {"mean": v[0], "lo": v[1], "hi": v[2]} for k, v in ci.items()},
-                "vs_baseline": {"delta_mAP": delta, "lo": dlo, "hi": dhi, "p_value": p},
-            }
-        )
-        for key, (present, value) in saved.items():
-            if present:
-                cfg.search[key] = value
-            else:
-                cfg.search.pop(key, None)
-
-    logger.info("%-22s %-8s %-20s %s", "config", "mAP", "95%% CI", "d(mAP) vs dense (p)")
-    for row in rows:
-        m = row["metrics"]["mAP"]["mean"]
-        lo = row["metrics"]["mAP"]["lo"]
-        hi = row["metrics"]["mAP"]["hi"]
-        sig = row["vs_baseline"]
-        logger.info(
-            "%-22s %-8.3f [%.3f, %.3f]    %+.3f (p=%.3f)",
-            row["name"], m, lo, hi, sig["delta_mAP"], sig["p_value"],
-        )
-    return rows
+def write_json(path: str | Path, payload: dict) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path

@@ -17,8 +17,8 @@ data/
 .ruff_cache/
 .mypy_cache/
 
-# Generated eval set (keep eval/queries.example.json instead)
-eval/queries.json
-
-# Large data archives
+# Large data archives and legacy datasets
 data_upload.tar
+data_upload.legacy.tar
+data_legacy_coco/
+*.log

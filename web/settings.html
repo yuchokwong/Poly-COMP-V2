@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings — Meme Retrieval</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/settings.js" defer></script>
+</head>
+<body data-page="settings">
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">◉</span> Meme Retrieval</a>
+    <nav class="nav">
+      <a href="/clip">CLIP</a>
+      <a href="/clip-nlp">CLIP + NLP</a>
+      <a href="/vlm">VLM</a>
+      <a href="/compare">Compare</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/settings" aria-current="page">Settings</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="page-head">
+      <div>
+        <p class="eyebrow">Runtime</p>
+        <h1>Settings</h1>
+        <p class="lede">
+          Fusion weights, over-fetch multipliers and reranker switches take effect on the
+          next search and persist to <code>data/settings.json</code>. Models, index type and
+          dataset are build-time choices and stay read-only.
+        </p>
+      </div>
+      <div class="page-head-side">
+        <span class="pill" id="save-state">loaded</span>
+      </div>
+    </section>
+
+    <div class="status-line" id="settings-status" role="status" aria-live="polite"></div>
+
+    <form id="settings-form" class="settings-form">
+      <div id="settings-groups"></div>
+      <div class="settings-actions">
+        <button class="button primary" type="submit" id="save-button">Save settings</button>
+        <button class="button" type="button" id="reset-button">Revert unsaved changes</button>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

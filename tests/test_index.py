@@ -18,6 +18,13 @@ def test_normalize_unit_norm():
     assert np.allclose(norms, 1.0, atol=1e-5)
 
 
+def test_add_rejects_a_vector_id_count_mismatch():
+    index = VectorIndex(dim=4, index_type="flat")
+    with pytest.raises(ValueError, match="misaligned"):
+        index.add(np.ones((2, 4), dtype=np.float32), np.array([7], dtype=np.int64))
+    assert index.size == 0
+
+
 def test_flat_index_search_returns_exact_neighbour():
     dim = 16
     matrix = _random_matrix(50, dim, seed=1)
@@ -71,6 +78,28 @@ def test_reconstruct_returns_normalised_vectors():
     assert np.allclose(rec, expected, atol=1e-5)
 
     assert index.reconstruct([999]).shape == (0, dim)
+
+
+def test_load_requires_the_id_map(tmp_path):
+    index = VectorIndex(dim=4, index_type="flat")
+    index.add(np.eye(4, dtype=np.float32), np.arange(4, dtype=np.int64))
+    index_file = tmp_path / "index.faiss"
+    index.save(index_file, tmp_path / "ids.npy")
+
+    with pytest.raises(FileNotFoundError, match="id map"):
+        VectorIndex.load(index_file, tmp_path / "missing.npy")
+
+
+def test_load_rejects_id_count_mismatch(tmp_path):
+    index = VectorIndex(dim=4, index_type="flat")
+    index.add(np.eye(4, dtype=np.float32), np.arange(4, dtype=np.int64))
+    index_file = tmp_path / "index.faiss"
+    ids_file = tmp_path / "ids.npy"
+    index.save(index_file, ids_file)
+    np.save(ids_file, np.arange(3, dtype=np.int64))
+
+    with pytest.raises(ValueError, match="rebuild"):
+        VectorIndex.load(index_file, ids_file)
 
 
 def test_ivfpq_index_returns_neighbour():

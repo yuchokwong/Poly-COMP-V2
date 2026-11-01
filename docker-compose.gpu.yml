@@ -1,12 +1,17 @@
 # GPU override: run with `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up`
 # Requires the NVIDIA Container Toolkit on the host.
+#
+# This image installs serving dependencies only. `vlm-caption` needs
+# requirements-vlm.txt and is intended to run natively on a GPU host; the device
+# variables below only matter for custom images that include those extras.
 services:
   app:
     build:
       args:
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
     environment:
-      TSR_MODEL__DEVICE: cuda
+      TSR_MODELS__CLIP__DEVICE: cuda
+      TSR_MODELS__TEXT__DEVICE: cuda
     deploy:
       resources:
         reservations:
@@ -20,7 +25,9 @@ services:
       args:
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
     environment:
-      TSR_MODEL__DEVICE: cuda
+      TSR_MODELS__CLIP__DEVICE: cuda
+      TSR_MODELS__TEXT__DEVICE: cuda
+      TSR_MODELS__VLM__DEVICE: cuda
     deploy:
       resources:
         reservations:

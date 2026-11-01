@@ -1,5 +1,5 @@
 app:
-  title: "Text-to-Image Retrieval"
+  title: "Meme Retrieval — CLIP vs CLIP+NLP vs VLM"
   host: 0.0.0.0
   port: 8000
   default_top_k: 12
@@ -11,71 +11,128 @@ paths:
   data_dir: data
   images_subdir: images
   db_name: gallery.db
-  index_name: index.faiss
-  ids_name: index_ids.npy
   manifest_name: manifest.jsonl
-  eval_name: eval_queries.json
-  report_name: eval_report.json
+  index_subdir: index
+  eval_dir: eval
+  reports_dir: reports
   web_dir: web
   cache_dir: .cache
 
-model:
-  name: ViT-B-32
-  pretrained: laion2b_s34b_b79k
-  device: auto
-  backend: torch    # torch | onnx  (onnx = faster CPU; run `tsr export-onnx`)
-  onnx_dir: null    # where exported ONNX lives (default: <cache_dir>/onnx)
-  threads: 0        # onnxruntime intra-op threads (0 = auto)
-  batch_size: 64
-  normalize: true
-  cache_dir: .cache/open_clip
+dataset:
+  name: memecap
+  hf_repo: hieupth/memecap
+  archive_name: memecap.zip
+  zip_url: https://huggingface.co/datasets/hieupth/memecap/resolve/main/memecap.zip
+  gdrive_id: 1o1IB6am0HdYS58CEOmmxra3WjJkrn-M1
+  annotations:
+    trainval: https://raw.githubusercontent.com/eujhwang/meme-cap/main/data/memes-trainval.json
+    test: https://raw.githubusercontent.com/eujhwang/meme-cap/main/data/memes-test.json
+  max_side: 768
+  quality: 90
+  dedup: sha1
+  keep_archive: true
+  limit: null
+
+models:
+  clip:
+    name: ViT-L-14
+    pretrained: laion2b_s32b_b82k
+    device: auto
+    batch_size: 64
+    normalize: true
+    cache_dir: .cache/open_clip
+  text:
+    name: BAAI/bge-small-en-v1.5
+    device: auto
+    batch_size: 64
+    query_instruction: "Represent this sentence for searching relevant passages: "
+    max_length: 512
+    pooling: cls                  # BGE is trained with CLS; use mean for E5-style models
+    cache_dir: .cache/text
+  vlm:
+    backend: qwen2_5_vl          # qwen2_5_vl | none
+    model: Qwen/Qwen2.5-VL-3B-Instruct
+    device: auto
+    dtype: bfloat16
+    attn_implementation: sdpa
+    max_pixels: 1003520
+    min_pixels: 200704
+    max_new_tokens: 448
+    batch_size: 1                # images per generate call; 4 is ~2x faster on 12 GB
+    do_sample: false
+    prompt_version: v1
+    cache_file: vlm/descriptions.jsonl
 
 index:
-  type: auto        # auto | flat | ivf | pq | hnsw (auto: flat<=300k, ivf<=1M, else pq)
-  auto_flat_max: 300000
-  auto_ivf_max: 1000000
-  nlist: 1024
+  type: flat
   nprobe: 32
-  m: 32
   ef_search: 64
+  m: 32
 
-gallery:
-  source: coco      # coco | coco_hf | local
-  hf_repo: undefined443/coco-karpathy-wds   # used by source=coco_hf (fast mirror)
-  cache_tars: true  # cache downloaded webdataset tars for instant re-runs
-  dedup: sha1       # sha1 (exact) | phash (near-duplicate)
-  pregenerate_thumbnails: false   # build thumbnails up front (see `tsr thumbnails`)
-  local_root: data/local_images
-  max_images: 10000
-  image_max_side: 256   # CLIP input is 224px; 256 keeps disk/CPU low
-  image_quality: 85
-  download_workers: 8
-  download_timeout: 30
-  download_retries: 3
-  seed: 42
+strategies:
+  enabled:
+    - clip
+    - clip_nlp
+    - vlm
+  clip:
+    prompt_ensemble: false
+    prompt_templates:
+      - "{}"
+      - "a meme about {}"
+  clip_nlp:
+    fetch_multiplier: 5
+    bm25_weights:
+      scene: 1.0
+      meaning: 1.6
+      metaphor: 1.8
+      title: 0.6
+    weights:
+      clip: 0.5
+      doc: 0.3
+      bm25: 0.2
+    expansion_weight: 0.5
+    fusion: minmax
+    expand: true
+    rerank:
+      enabled: true
+      model: BAAI/bge-reranker-base
+      top_n: 60
+      alpha: 0.3
+  vlm:
+    fetch_multiplier: 3
+    clip_weight: 0.2
+    expand: false
+    rerank:
+      enabled: false
+      model: BAAI/bge-reranker-base
+      top_n: 60
+      alpha: 0.3
 
-search:
-  prompt_templates:
-    - "{}"
-    - "a photo of {}"
-    - "a picture of {}"
-    - "a photograph of {}"
-  use_prompt_ensemble: false
-  hybrid: true
-  hybrid_alpha: 0.7
-  rerank: none      # none | caption | cross-encoder
-  rerank_top_n: 60
-  rerank_alpha: 0.5
-  rerank_model: cross-encoder/ms-marco-MiniLM-L-6-v2
-  translate: false  # translate CJK queries to English before encoding
-  translator_model: Helsinki-NLP/opus-mt-zh-en
+lexicon:
+  "distracted boyfriend": [couple, jealousy, distraction, ignoring]
+  "this is fine": [dog, fire, coffee, denial]
+  "drake": [approval, rejection, preference]
+  "woman yelling at cat": [argument, confusion, dinner]
+  "disaster girl": [fire, smile, disaster, chaos]
+  "expanding brain": [idea, galaxy, intelligence, absurd]
+  "success kid": [success, achievement, clenched, fist]
+  "awkward look monkey": [nervous, awkward, look]
+  "side eye": [suspicion, judgment, glance]
+  "spider man": [superhero, costume, lecturing]
 
 eval:
+  set_name: memecap_eval_v1
+  num_queries: 240
+  per_category:
+    visual: 80
+    intent: 80
+    metaphor: 80
   top_k:
     - 1
     - 5
     - 10
-    - 20
-  num_queries: 200
-  mode: caption     # caption | category
   seed: 42
+  bootstrap: 1000
+  max_ngram_overlap: 8
+  min_copy_tokens: 5    # a query may not share a longer contiguous run with its source
+  metaphor_max_df: 10   # shared metaphor labels must be rarer than this to grade 1

@@ -19,7 +19,8 @@ services:
         required: false
     environment:
       PYTHONPATH: /app/src
-      TSR_MODEL__CACHE_DIR: /root/.cache/open_clip
+      TSR_MODELS__CLIP__CACHE_DIR: /root/.cache/open_clip
+      TSR_MODELS__TEXT__CACHE_DIR: /root/.cache/text
     expose:
       - "8000"
     volumes:

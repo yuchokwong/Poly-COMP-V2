@@ -1,8 +1,9 @@
 """FAISS-backed vector index.
 
-Embeddings are L2-normalised so that inner-product search is equivalent to
-cosine similarity. The index stores only vectors; the mapping from FAISS row
-position to the SQLite image id is persisted alongside it in ``index_ids.npy``.
+Vectors are L2-normalised so inner product equals cosine similarity. Every
+index persists an ``ids.npy`` array mapping FAISS rows to ``images.id`` values.
+The ids file is mandatory: the old silent ``np.arange`` fallback could misalign
+search results without any error.
 """
 
 from __future__ import annotations
@@ -75,9 +76,13 @@ class VectorIndex:
 
     def add(self, embeddings: np.ndarray, ids: np.ndarray) -> None:
         embeddings = normalize(embeddings)
-        ids = np.asarray(ids, dtype=np.int64)
+        ids = np.asarray(ids, dtype=np.int64).reshape(-1)
+        if embeddings.shape[0] != ids.shape[0]:
+            raise ValueError(
+                f"Got {embeddings.shape[0]} vectors but {ids.shape[0]} ids; "
+                "refusing to build a misaligned index."
+            )
         if self.index_type in {"ivf", "pq"} and not self._trained:
-            # IVF needs enough points to train; fall back to flat for tiny sets.
             if embeddings.shape[0] < self.nlist * 39:
                 logger.warning(
                     "Only %d vectors for nlist=%d; falling back to a flat index.",
@@ -102,12 +107,9 @@ class VectorIndex:
         scores = scores[0]
         positions = positions[0]
         valid = positions >= 0
-        scores = scores[valid]
-        positions = positions[valid]
-        return scores, self.ids[positions]
+        return scores[valid], self.ids[positions[valid]]
 
     def reconstruct(self, ids: np.ndarray) -> np.ndarray:
-        """Return the (normalised) stored vectors for the given image ids."""
         ids = np.asarray(ids, dtype=np.int64)
         position = {int(v): i for i, v in enumerate(self.ids.tolist())}
         positions = [position[int(i)] for i in ids if int(i) in position]
@@ -128,8 +130,6 @@ class VectorIndex:
         index_file = Path(index_file)
         ids_file = Path(ids_file)
         index_file.parent.mkdir(parents=True, exist_ok=True)
-        # Write to temp files first, then swap them in, so an interrupted save
-        # never leaves a truncated index behind.
         idx_tmp = index_file.with_suffix(index_file.suffix + ".tmp")
         ids_tmp = ids_file.parent / (ids_file.name + ".tmp.npy")
         faiss.write_index(self.index, str(idx_tmp))
@@ -149,21 +149,41 @@ class VectorIndex:
     ) -> VectorIndex:
         index_file = Path(index_file)
         ids_file = Path(ids_file)
-        if index_type == "auto":
-            index_type = "flat"
+        if not index_file.exists():
+            raise FileNotFoundError(f"Index not found: {index_file}")
+        if not ids_file.exists():
+            raise FileNotFoundError(
+                f"Index id map not found: {ids_file}. Rebuild the index."
+            )
         raw = faiss.read_index(str(index_file))
+        # Trust the serialised FAISS object, not the caller's hint: a requested
+        # IVF/PQ build may have fallen back to flat for a small gallery, and
+        # applying IVF-only attributes to a flat index used to crash on load.
+        name = type(raw).__name__
+        if "IVFPQ" in name or "PQ" in name:
+            detected = "pq"
+        elif "IVF" in name:
+            detected = "ivf"
+        elif "HNSW" in name:
+            detected = "hnsw"
+        else:
+            detected = "flat"
         obj = cls.__new__(cls)
         obj.dim = int(raw.d)
-        obj.index_type = index_type
-        obj.nlist = getattr(raw, "nlist", 0)
+        obj.index_type = detected
+        obj.nlist = int(getattr(raw, "nlist", 0) or 0)
         obj.nprobe = nprobe
         obj.m = 32
         obj.ef_search = ef_search
-        if index_type in {"ivf", "pq"}:
+        if detected in {"ivf", "pq"}:
             raw.nprobe = nprobe
-        if index_type == "hnsw":
+        if detected == "hnsw":
             raw.hnsw.efSearch = ef_search
         obj.index = raw
         obj._trained = True
-        obj.ids = np.load(str(ids_file)) if ids_file.exists() else np.arange(raw.ntotal)
+        obj.ids = np.load(str(ids_file)).astype(np.int64)
+        if obj.ids.shape[0] != raw.ntotal:
+            raise ValueError(
+                f"Index has {raw.ntotal} vectors but {obj.ids.shape[0]} ids; rebuild."
+            )
         return obj

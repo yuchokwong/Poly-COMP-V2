@@ -11,7 +11,8 @@ services:
         required: false
     environment:
       PYTHONPATH: /app/src
-      TSR_MODEL__CACHE_DIR: /root/.cache/open_clip
+      TSR_MODELS__CLIP__CACHE_DIR: /root/.cache/open_clip
+      TSR_MODELS__TEXT__CACHE_DIR: /root/.cache/text
     ports:
       - "${TSR_APP__PORT:-8000}:8000"
     volumes:
@@ -20,8 +21,9 @@ services:
       - openclip_cache:/root/.cache
     restart: unless-stopped
 
-  # One-shot tool for building the gallery + index:
-  #   docker compose run --rm build python -m tsr build --max-images 10000
+  # One-shot tool for building the gallery and indexes:
+  #   docker compose --profile tools run --rm build python -m tsr prepare --limit 300
+  #   docker compose --profile tools run --rm build python -m tsr build --strategy all
   build:
     profiles: ["tools"]
     build:
@@ -34,7 +36,8 @@ services:
         required: false
     environment:
       PYTHONPATH: /app/src
-      TSR_MODEL__CACHE_DIR: /root/.cache/open_clip
+      TSR_MODELS__CLIP__CACHE_DIR: /root/.cache/open_clip
+      TSR_MODELS__TEXT__CACHE_DIR: /root/.cache/text
     volumes:
       - ./data:/app/data
       - openclip_cache:/root/.cache

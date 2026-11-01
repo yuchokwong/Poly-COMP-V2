@@ -1,0 +1,10 @@
+# Extra dependencies for offline Qwen2.5-VL captioning (`python -m tsr vlm-caption`).
+# Install this on the machine with the GPU that produces data/vlm/descriptions.jsonl.
+# The web server only needs requirements.txt: strategy C reads the generated text.
+-r requirements.txt
+accelerate>=1.1
+sentencepiece>=0.2
+qwen-vl-utils>=0.0.8
+
+# Optional 4-bit loading for small GPUs:
+# bitsandbytes>=0.44

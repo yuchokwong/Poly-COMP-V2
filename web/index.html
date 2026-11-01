@@ -1,104 +1,115 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Text-to-Image Retrieval</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meme Retrieval — CLIP vs CLIP+NLP vs VLM</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </head>
-<body>
+<body data-page="home">
   <header class="topbar">
-    <a class="brand" href="/" title="Home">
-      <h1>Beyond Vision</h1>
-    </a>
-    <div class="top-actions">
-      <div class="stats" id="stats"></div>
-      <button type="button" class="chip" id="settings-btn">Settings</button>
-    </div>
+    <a class="brand" href="/"><span class="brand-mark">◉</span> Meme Retrieval</a>
+    <nav class="nav">
+      <a href="/clip">CLIP</a>
+      <a href="/clip-nlp">CLIP + NLP</a>
+      <a href="/vlm">VLM</a>
+      <a href="/compare">Compare</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/settings">Settings</a>
+      <a href="/docs" target="_blank" rel="noreferrer">API</a>
+    </nav>
   </header>
 
-  <main>
-    <form class="searchbar" id="search-form" autocomplete="off">
-      <input
-        id="query"
-        type="text"
-        placeholder="Describe an image, e.g. 'a dog running on a beach at sunset'"
-        aria-label="Search query"
-      />
-      <button type="submit" id="search-btn">Search</button>
-    </form>
-
-    <div class="controls">
-      <label class="control">
-        <span>Results</span>
-        <input id="topk" type="range" min="1" max="50" value="12" />
-        <output id="topk-value">12</output>
-      </label>
-      <label class="control checkbox">
-        <input id="hybrid" type="checkbox" checked />
-        <span>Hybrid (CLIP + keyword)</span>
-      </label>
-      <label class="control">
-        <span>Split</span>
-        <select id="split">
-          <option value="">all</option>
-          <option value="val">val</option>
-          <option value="train">train</option>
-          <option value="local">local</option>
-        </select>
-      </label>
-      <label class="control">
-        <span>Min score</span>
-        <input id="minscore" type="number" step="0.01" min="0" placeholder="0" />
-      </label>
-      <button type="button" class="chip" id="share-btn">Copy link</button>
-    </div>
-
-    <section id="status" class="status hidden"></section>
-
-    <section class="gallery-head hidden" id="gallery-head">
-      <span id="result-meta"></span>
+  <main class="wrap">
+    <section class="hero">
+      <p class="eyebrow">COMP5523 · text-to-image retrieval</p>
+      <h1>One meme gallery.<br>Three ways to understand it.</h1>
+      <p class="lede">
+        The same 6,382 Meme-Cap images are searched through three independent pipelines.
+        Compare what pixels alone can find, what human annotations add, and what a
+        vision-language model can recover without them.
+      </p>
+      <div class="hero-actions">
+        <a class="button primary" href="/compare">Run a three-way comparison</a>
+        <a class="button" href="/evaluation">See the evaluation</a>
+      </div>
+      <dl class="stat-strip" id="home-stats">
+        <div><dt>Images</dt><dd id="stat-images">—</dd></div>
+        <div><dt>Strategies ready</dt><dd id="stat-ready">—</dd></div>
+        <div><dt>VLM descriptions</dt><dd id="stat-vlm">—</dd></div>
+        <div><dt>Dataset</dt><dd>Meme-Cap</dd></div>
+      </dl>
     </section>
 
-    <section id="results" class="grid"></section>
+    <section class="section" aria-labelledby="strategies-title">
+      <div class="section-head">
+        <h2 id="strategies-title">The three directions</h2>
+        <p>Every card uses the same gallery, the same query, and the same metric definitions.</p>
+      </div>
+      <div class="strategy-grid" id="strategy-cards">
+        <article class="strategy-card skeleton" data-strategy="clip">
+          <div class="strategy-top">
+            <span class="tag">A · baseline</span>
+            <span class="pill" data-ready>loading</span>
+          </div>
+          <h3>CLIP only</h3>
+          <p>OpenCLIP aligns the query with image pixels. No captions, no annotations —
+            the zero-knowledge baseline for visual search.</p>
+          <footer><a class="button" href="/clip">Search with CLIP</a></footer>
+        </article>
+        <article class="strategy-card skeleton" data-strategy="clip_nlp">
+          <div class="strategy-top">
+            <span class="tag">B · human labels</span>
+            <span class="pill" data-ready>loading</span>
+          </div>
+          <h3>CLIP + NLP</h3>
+          <p>Fuses the visual score with a dense index over Meme-Cap annotations and
+            field-weighted BM25, then reranks with a cross-encoder.</p>
+          <footer><a class="button" href="/clip-nlp">Search with CLIP + NLP</a></footer>
+        </article>
+        <article class="strategy-card skeleton" data-strategy="vlm">
+          <div class="strategy-top">
+            <span class="tag">C · generated labels</span>
+            <span class="pill" data-ready>loading</span>
+          </div>
+          <h3>VLM descriptions</h3>
+          <p>Qwen2.5-VL reads each meme offline and writes scene, OCR, meaning and
+            metaphor text. Retrieval matches those generated documents.</p>
+          <footer><a class="button" href="/vlm">Search with VLM</a></footer>
+        </article>
+      </div>
+    </section>
 
-    <div class="load-more hidden" id="load-more">
-      <button type="button" class="chip" id="load-more-btn">Load more</button>
-    </div>
+    <section class="section split">
+      <div>
+        <h2>Why compare them?</h2>
+        <p>
+          Strategy B needs 6,382 human-written captions that a new meme will never have.
+          Strategy C needs GPU hours but generalises to unseen images. Strategy A needs
+          nothing at all. The evaluation reports accuracy next to this knowledge cost,
+          latency, and paired bootstrap significance.
+        </p>
+      </div>
+      <div>
+        <h2>What the pages show</h2>
+        <ul class="checklist">
+          <li><a href="/compare">Compare</a> — one query, three columns, shared hits highlighted.</li>
+          <li><a href="/evaluation">Evaluation</a> — mAP, MRR, nDCG, latency and ablation tables.</li>
+          <li>Each strategy page exposes score components and the underlying annotations.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section" id="home-error" hidden>
+      <div class="notice error" data-error-text></div>
+    </section>
   </main>
 
-  <div class="lightbox hidden" id="lightbox">
-    <button class="lightbox-close" id="lightbox-close" aria-label="Close">&times;</button>
-    <div class="lightbox-body">
-      <img id="lightbox-img" alt="" />
-      <div class="lightbox-info" id="lightbox-info"></div>
-    </div>
-  </div>
-
-  <div class="modal hidden" id="settings-modal">
-    <div class="modal-body">
-      <div class="modal-head">
-        <h2>Settings</h2>
-        <button class="modal-close" id="settings-close" aria-label="Close">&times;</button>
-      </div>
-      <p class="modal-hint">
-        Search settings apply immediately and are saved to
-        <code>data/settings.json</code>. Build-time settings require a rebuild.
-      </p>
-      <div id="settings-fields"></div>
-      <div class="modal-actions">
-        <button type="button" class="chip" id="settings-save">Save</button>
-        <button type="button" class="chip" id="settings-reload">Reload</button>
-        <span class="settings-msg" id="settings-msg"></span>
-      </div>
-    </div>
-  </div>
-
-  <footer>
-    <span>COMP5523 Group Project · General-domain text-to-image retrieval</span>
+  <footer class="footer">
+    <span>Meme-Cap (Hwang et al., 2023) · research use only</span>
+    <span><a href="/api/health">health</a> · <a href="/api/stats">stats</a></span>
   </footer>
-
-  <script src="/static/app.js"></script>
 </body>
 </html>

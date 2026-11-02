@@ -4,6 +4,9 @@ app:
   port: 8000
   default_top_k: 12
   max_top_k: 100
+  # Load the three strategies in a background thread at startup. Compose sets
+  # TSR_APP__PRELOAD_MODELS=true; tests and `tsr stats` keep it off.
+  preload_models: false
   cors_origins:
     - "*"
 

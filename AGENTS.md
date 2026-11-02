@@ -97,6 +97,12 @@ docker compose up -d --build
 - `strategies/*` implement `Strategy` (`stats`, `search`) and return `Hit`s with
   per-signal `components`; `service.StrategyManager` loads shared resources lazily
   and reports readiness without crashing when an index is absent.
+  `Strategy.ensure_loaded` serialises concurrent callers with a per-strategy lock,
+  so a request that arrives during a load waits for readiness instead of observing
+  a half-initialised strategy. With `app.preload_models` (compose sets
+  `TSR_APP__PRELOAD_MODELS=true`) the manager warms all strategies from a daemon
+  thread at startup; `runtime.configure_threads` pins OpenMP/MKL threads to the
+  container's cgroup CPU quota before torch is imported.
 - `nlp/fusion.py` min-max/z-score/RRF fusion drops disabled or empty signals and
   renormalises the remaining weights. `nlp/analyze.py` query expansion feeds BM25
   only — never CLIP or the dense encoder.

@@ -100,6 +100,18 @@ class StrategyManager:
             raise UnknownStrategy(key)
         return strategy
 
+    def warmup(self) -> None:
+        """Load every strategy so the first query does not pay the model load."""
+        logger.info("Preloading strategies: %s", ", ".join(self.strategies))
+        for key, strategy in self.strategies.items():
+            try:
+                strategy.ensure_loaded()
+            except Exception as exc:  # noqa: BLE001 - one strategy must not stop the rest
+                logger.warning("Preload failed for %s: %s", key, exc)
+            else:
+                logger.info("Preload %s: ready=%s", key, strategy.ready)
+        logger.info("Preload complete")
+
     def status(self) -> list[dict]:
         out = []
         for key, strategy in self.strategies.items():

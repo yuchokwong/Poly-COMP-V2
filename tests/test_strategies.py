@@ -1,9 +1,12 @@
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from tsr.strategies.base import Strategy
 from tsr.strategies.clip_nlp import ClipNlpStrategy
 from tsr.strategies.clip_only import ClipOnlyStrategy
 from tsr.strategies.vlm import VlmStrategy
@@ -524,3 +527,43 @@ def test_vlm_stats_report_the_loaded_artifacts(cfg, monkeypatch):
     assert stats["ready"] is True
     assert stats["num_docs"] == 3
     assert stats["coverage"] == pytest.approx(1.0)
+
+
+class _SlowStrategy(Strategy):
+    key = "clip"
+
+    def __init__(self, ctx, delay: float) -> None:
+        super().__init__(ctx)
+        self.delay = delay
+        self.load_calls = 0
+
+    def load(self) -> None:
+        self.load_calls += 1
+        time.sleep(self.delay)
+        self.ready = True
+
+    def search(self, query, k, **options):  # pragma: no cover - not exercised
+        raise NotImplementedError
+
+
+def test_ensure_loaded_serialises_concurrent_callers(cfg):
+    strategy = _SlowStrategy(SimpleNamespace(cfg=cfg, store=None), delay=0.1)
+    barrier = threading.Barrier(4)
+    ready_after = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        barrier.wait()
+        strategy.ensure_loaded()
+        with lock:
+            ready_after.append(strategy.ready)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert strategy.load_calls == 1
+    assert ready_after == [True] * 4

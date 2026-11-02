@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -13,6 +14,7 @@ from tsr.compare import load_report
 from tsr.config import AttrDict, eval_dir, load_config, reports_dir, web_dir
 from tsr.evaluate import load_queries
 from tsr.logging_utils import get_logger, setup_logging
+from tsr.runtime import configure_threads
 from tsr.schemas import (
     CompareResponse,
     DetailResponse,
@@ -40,6 +42,7 @@ PAGES = {
 def create_app(cfg: AttrDict | None = None) -> FastAPI:
     cfg = cfg or load_config()
     setup_logging()
+    logger.info("Runtime thread budget: %d", configure_threads())
 
     from tsr.settings import apply_persisted
 
@@ -49,6 +52,12 @@ def create_app(cfg: AttrDict | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         app.state.cfg = cfg
         app.state.manager = StrategyManager(cfg)
+        if bool(cfg.app.get("preload_models", False)):
+            threading.Thread(
+                target=app.state.manager.warmup,
+                name="tsr-preload",
+                daemon=True,
+            ).start()
         yield
         app.state.manager.close()
 

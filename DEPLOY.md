@@ -164,6 +164,8 @@ network (`expose: 8000`), never directly to the host.
 | Variable | Purpose |
 | --- | --- |
 | `TSR_APP__PORT` | Host port for the base compose file (default 8000) |
+| `TSR_APP__PRELOAD_MODELS` | Load all strategies at startup (compose default `true`); set `false` to load on first request |
+| `OMP_NUM_THREADS` | Torch thread cap; defaults to the container's CPU quota/affinity |
 | `TSR_MODELS__CLIP__DEVICE` | `cpu` or `cuda` (use `docker-compose.gpu.yml`) |
 | `TSR_MODELS__CLIP__CACHE_DIR` | Model cache directory; set by compose to `/root/.cache/open_clip` |
 | `TSR_MODELS__TEXT__DEVICE` | Device for BGE query encoding |

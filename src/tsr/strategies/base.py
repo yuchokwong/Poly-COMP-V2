@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import abc
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -161,6 +162,7 @@ class Strategy(abc.ABC):
         self.ready = False
         self.load_error: str | None = None
         self._loaded = False
+        self._load_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     @property
@@ -168,15 +170,22 @@ class Strategy(abc.ABC):
         return strategy_index_dir(self.cfg, self.key)
 
     def ensure_loaded(self) -> None:
+        # Concurrent callers (a health probe and a search, or startup preload and
+        # the first visitor) must wait for the same load instead of observing a
+        # half-initialised strategy and reporting a spurious 503.
         if self._loaded:
             return
-        self._loaded = True
-        try:
-            self.load()
-        except Exception as exc:  # noqa: BLE001 - readiness is surfaced, not raised
-            self.ready = False
-            self.load_error = str(exc)
-            logger.warning("Strategy %s not ready: %s", self.key, exc)
+        with self._load_lock:
+            if self._loaded:
+                return
+            try:
+                self.load()
+            except Exception as exc:  # noqa: BLE001 - readiness is surfaced, not raised
+                self.ready = False
+                self.load_error = str(exc)
+                logger.warning("Strategy %s not ready: %s", self.key, exc)
+            finally:
+                self._loaded = True
 
     @abc.abstractmethod
     def load(self) -> None:

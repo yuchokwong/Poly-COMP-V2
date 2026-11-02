@@ -13,6 +13,7 @@ services:
       PYTHONPATH: /app/src
       TSR_MODELS__CLIP__CACHE_DIR: /root/.cache/open_clip
       TSR_MODELS__TEXT__CACHE_DIR: /root/.cache/text
+      TSR_APP__PRELOAD_MODELS: ${TSR_APP__PRELOAD_MODELS:-true}
     ports:
       - "${TSR_APP__PORT:-8000}:8000"
     volumes:

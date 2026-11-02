@@ -6,7 +6,9 @@ __pycache__
 .venv
 venv
 data
+data.tar.gz
 data_upload.tar
+data_upload.tar.gz
 .cache
 .env
 .pytest_cache

@@ -14,12 +14,28 @@ server needs a finished `data/` directory, not source-only.
 
 ---
 
-## 1. Prepare the data (once)
+## 1. Get the data
 
-There is no published data archive for this version. Build it on a machine with
-network access:
+### Prebuilt (recommended)
+
+The [`v1-data` release](https://github.com/yuchokwong/Poly-COMP-V2/releases/tag/v1-data)
+contains a finished `data/` directory — 6,378 images, the SQLite gallery, all three
+indexes and the evaluation reports — so the server needs neither network access to
+HuggingFace nor a GPU:
 
 ```bash
+cd ~/meme-retrieval
+curl -L https://github.com/yuchokwong/Poly-COMP-V2/releases/download/v1-data/data.tar.gz | tar -xz
+```
+
+That completes this section; skip to section 2. The archive is ~540 MB and extracts in
+place as `data/`. The first search still downloads the CLIP and BGE weights (~2 GB) into
+the `openclip_cache` volume.
+
+### Build it yourself (once)
+
+Only needed when you change the dataset, the CLIP backbone or the VLM prompt. Build it on
+a machine with network access:
 python -m tsr prepare                     # ~1.7 GB download, 6,382 images
 python -m tsr build --strategy gallery     # SQLite rows + shared CLIP index
 python -m tsr build --strategy clip_nlp    # annotation docs + BGE index
@@ -39,14 +55,15 @@ TSR_MODELS__VLM__BATCH_SIZE=8 python -m tsr vlm-caption            # resumable
 python -m tsr build --strategy vlm
 ```
 
-Then copy the results to the server:
+Then copy the results to the server, or upload them once as a release asset and
+download it there with `curl`:
 
 ```bash
 rsync -av data/ user@server:~/meme-retrieval/data/
 ```
 
-Do **not** copy `data/.cache/` (thumbnails are regenerated) or
-`data/raw/memecap.zip` (only needed to re-run `prepare`). To caption on the server
+Do **not** copy `data/.cache/` (thumbnails are regenerated), `data/raw/` (only needed
+to re-run `prepare`) or the SQLite `-wal`/`-shm` side files. To caption on the server
 instead, install the VLM extras natively there and run the same commands — the base
 Docker image deliberately excludes `transformers`' VLM stack extras.
 

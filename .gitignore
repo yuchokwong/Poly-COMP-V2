@@ -18,7 +18,9 @@ data/
 .mypy_cache/
 
 # Large data archives and legacy datasets
+data.tar.gz
 data_upload.tar
+data_upload.tar.gz
 data_upload.legacy.tar
 data_legacy_coco/
 *.log

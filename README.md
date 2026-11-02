@@ -79,15 +79,33 @@ All of `data/` is gitignored. Cite arXiv:2305.13703 when using Meme-Cap.
 
 ## Quick start
 
+### Fastest: prebuilt data (no GPU, ~5 minutes)
+
+The [`v1-data` release](https://github.com/yuchokwong/Poly-COMP-V2/releases/tag/v1-data)
+ships a finished `data/` directory — 6,378 images, the SQLite gallery, all three FAISS
+indexes and the evaluation reports — so nothing has to be downloaded from HuggingFace or
+built. This is the recommended way to try the demo; strategy C works without a GPU.
+
 ```bash
 git clone https://github.com/yuchokwong/Poly-COMP-V2.git
 cd Poly-COMP-V2
+curl -L https://github.com/yuchokwong/Poly-COMP-V2/releases/download/v1-data/data.tar.gz | tar -xz
+docker compose up -d --build          # http://localhost:8000
 ```
 
-### Docker (recommended for serving)
+The archive is ~540 MB and extracts in place as `data/`. The first search still downloads
+OpenCLIP ViT-L-14 and BGE-small (~2 GB) into the `openclip_cache` volume; later starts reuse
+them. Needs Docker Engine with Compose v2.24 or newer. To serve it with a domain and
+automatic HTTPS, see [DEPLOY.md](DEPLOY.md).
 
-Needs Docker Engine with Compose v2.24 or newer (the compose files mark `.env` as
-optional with `env_file.required`).
+Images and annotations come from Meme-Cap; cite arXiv:2305.13703 when using them.
+
+### Build it yourself
+
+Pick this route to rebuild the gallery, change the CLIP backbone, or regenerate the VLM
+descriptions. It downloads ~1.7 GB of source images and takes 30–60 minutes on CPU.
+
+#### Docker (recommended for serving)
 
 ```bash
 cp .env.example .env            # optional; edit models/weights if needed
@@ -116,7 +134,7 @@ encoder, not the 3B VLM. An index covering less than 95% of the gallery is repor
 as unavailable (with the exact counts) rather than serving a half-captioned gallery;
 finish captioning and rerun `build --strategy vlm --force`.
 
-### Native development
+#### Native development
 
 Python 3.10+ with PyTorch/OpenCLIP wheels (verified on Python 3.14 + torch 2.11 on
 Windows). Without installing the package, prefix commands with `PYTHONPATH=src`.

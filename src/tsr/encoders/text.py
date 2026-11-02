@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterable
 
 import numpy as np
@@ -36,10 +37,18 @@ class TextEncoder:
         self._tokenizer = None
         self._model = None
         self._dim: int | None = None
+        self._load_lock = threading.Lock()
 
     def load(self) -> None:
+        # Startup preload and the first visitor can race here.
         if self._model is not None:
             return
+        with self._load_lock:
+            if self._model is not None:
+                return
+            self._load()
+
+    def _load(self) -> None:
         from transformers import AutoModel, AutoTokenizer
 
         logger.info("Loading text encoder %s on %s ...", self.model_name, self.device)

@@ -26,6 +26,7 @@ logger = get_logger(__name__)
 
 class ClipNlpStrategy(Strategy):
     key = "clip_nlp"
+    uses_text = True
     title = "CLIP + NLP"
     description = (
         "Fuses CLIP visual similarity with a dense index over Meme-Cap "

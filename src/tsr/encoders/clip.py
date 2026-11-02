@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -44,11 +45,20 @@ class ClipEncoder:
         self._preprocess = None
         self._tokenizer = None
         self._dim: int | None = None
+        self._load_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     def load(self) -> None:
+        # Startup preload and the first visitor can race here; loading twice
+        # would double peak memory for a 1.6 GB backbone.
         if self._model is not None:
             return
+        with self._load_lock:
+            if self._model is not None:
+                return
+            self._load()
+
+    def _load(self) -> None:
         import open_clip
         import torch
 

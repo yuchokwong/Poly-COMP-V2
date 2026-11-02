@@ -24,6 +24,7 @@ MIN_COVERAGE = 0.95
 
 class VlmStrategy(Strategy):
     key = "vlm"
+    uses_text = True
     title = "VLM descriptions"
     description = (
         "Qwen2.5-VL reads each meme offline and writes scene / OCR / meaning / "

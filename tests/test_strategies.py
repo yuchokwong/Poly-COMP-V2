@@ -111,6 +111,36 @@ def make_ctx(cfg, *, clip=None, text=None, store=None, reranker=None):
     )
 
 
+def test_warm_models_loads_what_a_query_needs(cfg):
+    cfg.strategies.clip_nlp.rerank.enabled = True
+    cfg.strategies.clip_nlp.rerank.model = "BAAI/bge-reranker-base"
+    calls = []
+    ctx = make_ctx(cfg)
+    ctx.clip.encoder = SimpleNamespace(load=lambda: calls.append("clip"))
+    ctx.text = SimpleNamespace(load=lambda: calls.append("text"))
+    ctx.reranker = lambda model: SimpleNamespace(load=lambda: calls.append(f"rerank:{model}"))
+
+    ClipNlpStrategy(ctx).warm_models()
+
+    assert calls == ["clip", "text", "rerank:BAAI/bge-reranker-base"]
+
+
+def test_warm_models_survives_a_model_that_will_not_load(cfg):
+    cfg.strategies.clip_nlp.rerank.enabled = False
+    calls = []
+
+    def fail() -> None:
+        raise RuntimeError("weights unavailable")
+
+    ctx = make_ctx(cfg)
+    ctx.clip.encoder = SimpleNamespace(load=fail)
+    ctx.text = SimpleNamespace(load=lambda: calls.append("text"))
+
+    ClipNlpStrategy(ctx).warm_models()
+
+    assert calls == ["text"]
+
+
 def test_clip_only_filters_non_positive_scores(cfg):
     ctx = make_ctx(
         cfg,

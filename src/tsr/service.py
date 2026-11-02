@@ -109,6 +109,8 @@ class StrategyManager:
             except Exception as exc:  # noqa: BLE001 - one strategy must not stop the rest
                 logger.warning("Preload failed for %s: %s", key, exc)
             else:
+                if strategy.ready:
+                    strategy.warm_models()
                 logger.info("Preload %s: ready=%s", key, strategy.ready)
         logger.info("Preload complete")
 

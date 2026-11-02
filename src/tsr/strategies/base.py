@@ -16,7 +16,7 @@ from tsr.encoders.clip import ClipEncoder
 from tsr.encoders.text import TextEncoder
 from tsr.index import VectorIndex
 from tsr.logging_utils import get_logger
-from tsr.nlp.rerank import CrossEncoderReranker
+from tsr.nlp.rerank import DEFAULT_MODEL, CrossEncoderReranker
 
 logger = get_logger(__name__)
 
@@ -154,6 +154,7 @@ class Strategy(abc.ABC):
     key: str = ""
     title: str = ""
     description: str = ""
+    uses_text: bool = False
 
     def __init__(self, ctx: StrategyContext) -> None:
         self.ctx = ctx
@@ -190,6 +191,25 @@ class Strategy(abc.ABC):
     @abc.abstractmethod
     def load(self) -> None:
         """Verify artifacts and load indexes. Must set ``ready``/``load_error``."""
+
+    def warm_models(self) -> None:
+        """Load the encoders this strategy's search path needs.
+
+        ``load`` only verifies indexes, so without this the first query after a
+        restart pays seconds of model initialisation inside the request.
+        """
+        loads = [("clip", self.ctx.clip.encoder.load)]
+        if self.uses_text:
+            loads.append(("text", self.ctx.text.load))
+        rerank_cfg = self.cfg.strategies.get(self.key, {}).get("rerank") or {}
+        if bool(rerank_cfg.get("enabled", False)):
+            model = str(rerank_cfg.get("model") or DEFAULT_MODEL)
+            loads.append(("rerank", self.ctx.reranker(model).load))
+        for name, load in loads:
+            try:
+                load()
+            except Exception as exc:  # noqa: BLE001 - preload must not fail the app
+                logger.warning("Preload %s model for %s failed: %s", name, self.key, exc)
 
     @abc.abstractmethod
     def search(self, query: str, k: int, **options) -> SearchOutput:

@@ -4,10 +4,12 @@ The deployment is a FastAPI app serving seven pages (`/`, `/clip`, `/clip-nlp`, 
 `/compare`, `/evaluation`, `/settings`) plus a small JSON API. All state lives in `./data`, which
 is mounted into the container.
 
-Two exposure options:
+Three exposure options:
 
 - **A. Direct IP** — quickest, `http://<SERVER_IP>:8000`.
 - **B. Domain + HTTPS** — Caddy issues and renews certificates automatically.
+- **C. Home machine + Cloudflare Tunnel** — no inbound ports, no router changes;
+  good for a demo from a home connection.
 
 New to the project? Complete the build steps in [README.md](README.md) first; the
 server needs a finished `data/` directory, not source-only.
@@ -157,6 +159,80 @@ network (`expose: 8000`), never directly to the host.
 
 ---
 
+## C. Home machine + Cloudflare Tunnel
+
+A quick tunnel makes the app reachable at a random
+`https://<words>.trycloudflare.com` URL without opening a router port. The tunnel
+connection is outbound-only: `cloudflared` dials Cloudflare, and visitors reach
+Cloudflare — never your machine directly. It needs no Cloudflare account, and the URL
+changes every time you restart the tunnel.
+
+### 1. Harden the app first
+
+The app is a public query endpoint the moment the tunnel is up. Before exposing it:
+
+```bash
+# .env
+APP_BIND_IP=127.0.0.1              # only the local tunnel can reach the port
+TSR_APP__EXPOSE_DOCS=false         # default; keeps /docs closed
+TSR_APP__ADMIN_TOKEN=change-me     # /settings becomes read-only for visitors
+```
+
+With Docker, `docker compose up -d` picks these up (`TSR_APP__HOST=0.0.0.0` inside the
+container is set by compose; `APP_BIND_IP` controls which host interface is
+published). With a native install, `python -m tsr serve` already binds `127.0.0.1`.
+
+What is already in place regardless of settings:
+
+- `/api/image/{id}` and `/api/thumbnail/{id}` resolve paths inside `data/images/`
+  only — a `..` id is rejected before the filesystem is touched.
+- `/static` serves `web/` only.
+- `PUT /api/settings` accepts only whitelisted, type-checked keys (and needs the
+  admin token when one is set).
+- Search queries are capped at 200 characters.
+- The VLM model is never imported by the API process.
+
+### 2. Run a quick tunnel
+
+Install `cloudflared` once (`brew install cloudflared`,
+`winget install Cloudflare.cloudflared`, or the `.deb` from
+<https://github.com/cloudflare/cloudflared/releases>), then:
+
+```bash
+python -m tsr serve --port 8177          # terminal 1 (native), or docker compose up -d
+cloudflared tunnel --url http://localhost:8177   # terminal 2
+```
+
+`cloudflared` prints the assigned `https://…trycloudflare.com` URL; share that. Watch
+it for `Registered tunnel connection` — that means it is live. Ctrl-C ends the
+tunnel and the URL stops working; nothing else on the machine is exposed.
+
+### 3. If an account/stable URL is wanted
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create meme-demo
+cloudflared tunnel route dns meme-demo demo.example.com
+cloudflared tunnel run --url http://localhost:8177 meme-demo
+```
+
+A named tunnel gives a stable hostname. Put **Cloudflare Access** in front of it
+(Zero Trust → Access → Applications) to require a login before any request reaches
+the app; that is the strongest option for a home deployment.
+
+### 4. What a visitor can and cannot do
+
+Can: search the gallery, open detail dialogs, read the evaluation reports.
+Cannot: read files outside `data/images/` and `web/`, change settings (token set),
+write files, execute code, or reach other services on your LAN.
+
+Keep in mind: `cloudflared` is a proxy to one local port, so anything else listening
+on that same port is what you expose. Do not run the tunnel while the app is bound to
+`0.0.0.0` unless the LAN is trusted, and keep the machine's firewall on. For heavier
+traffic, stop the tunnel rather than leave it running unattended.
+
+---
+
 ## Environment
 
 `.env` is optional and is read by every compose file. The values most worth setting:
@@ -164,7 +240,10 @@ network (`expose: 8000`), never directly to the host.
 | Variable | Purpose |
 | --- | --- |
 | `TSR_APP__PORT` | Host port for the base compose file (default 8000) |
+| `APP_BIND_IP` | Host interface the published port binds to (default `0.0.0.0`; set `127.0.0.1` when only a local tunnel should reach it) |
 | `TSR_APP__PRELOAD_MODELS` | Load all strategies at startup (compose default `true`); set `false` to load on first request |
+| `TSR_APP__EXPOSE_DOCS` | Serve `/docs`, `/redoc` and `/openapi.json` (default `false`) |
+| `TSR_APP__ADMIN_TOKEN` | Require `X-Admin-Token` for `PUT /api/settings`; the settings page becomes read-only |
 | `OMP_NUM_THREADS` | Torch thread cap; defaults to the container's CPU quota/affinity |
 | `TSR_MODELS__CLIP__DEVICE` | `cpu` or `cuda` (use `docker-compose.gpu.yml`) |
 | `TSR_MODELS__CLIP__CACHE_DIR` | Model cache directory; set by compose to `/root/.cache/open_clip` |
@@ -236,7 +315,8 @@ cd ~/meme-retrieval
 python3 -m venv .venv && source .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt && pip install -e .
-python -m tsr serve --host 0.0.0.0 --port 8000
+python -m tsr serve                 # binds 127.0.0.1:8000
+# add --host 0.0.0.0 only when other machines must reach it directly
 ```
 
 Behind nginx + certbot:

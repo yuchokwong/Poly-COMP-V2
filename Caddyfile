@@ -9,6 +9,14 @@
 	# Forward everything to the FastAPI app on the internal compose network.
 	reverse_proxy app:8000
 
+	# Optional: password-protect the whole site. Generate the hash with
+	#   docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
+	# then uncomment and paste it. Visitors get a browser login prompt before any
+	# request reaches the app.
+	# basic_auth {
+	# 	demo $2a$14$replace.with.the.generated.hash
+	# }
+
 	# Basic security headers.
 	header {
 		X-Content-Type-Options nosniff

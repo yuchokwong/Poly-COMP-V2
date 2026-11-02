@@ -1,12 +1,19 @@
 app:
   title: "Meme Retrieval — CLIP vs CLIP+NLP vs VLM"
-  host: 0.0.0.0
+  # Native runs (and Cloudflare Tunnel) reach the app on loopback; the container
+  # bind address is overridden to 0.0.0.0 by the compose files.
+  host: 127.0.0.1
   port: 8000
   default_top_k: 12
   max_top_k: 100
   # Load the three strategies in a background thread at startup. Compose sets
   # TSR_APP__PRELOAD_MODELS=true; tests and `tsr stats` keep it off.
   preload_models: false
+  # Serve /docs, /redoc and /openapi.json. Off for public demos.
+  expose_docs: false
+  # When set (TSR_APP__ADMIN_TOKEN), PUT /api/settings needs X-Admin-Token and
+  # the settings page becomes read-only.
+  # admin_token: ""
   cors_origins:
     - "*"
 

@@ -118,6 +118,71 @@ def test_settings_get_and_put(client, cfg):
     assert out_of_range.status_code == 422
 
 
+def test_query_length_is_capped(client):
+    long_query = "a" * 201
+    assert (
+        client.get("/api/strategies/clip/search", params={"q": long_query}).status_code == 422
+    )
+    assert client.get("/api/search", params={"q": long_query}).status_code == 422
+    assert client.get("/api/compare", params={"q": long_query}).status_code == 422
+
+    allowed = client.get("/api/strategies/clip/search", params={"q": "a" * 200})
+    assert allowed.status_code == 503  # passes validation, strategy is not built
+
+
+def test_images_are_cacheable(cfg, store):
+    from PIL import Image
+
+    images = Path(cfg.paths.data_dir) / "images" / "memecap"
+    images.mkdir(parents=True)
+    Image.new("RGB", (8, 8), (200, 30, 30)).save(images / "memes_00000.jpg", "JPEG")
+
+    with TestClient(create_app(cfg)) as client:
+        for url in ("/api/image/1", "/api/thumbnail/1?size=64"):
+            response = client.get(url)
+            assert response.status_code == 200, url
+            assert response.headers["cache-control"] == "public, max-age=86400"
+
+
+def test_api_docs_are_closed_by_default(client):
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
+def test_api_docs_can_be_enabled(cfg):
+    cfg.app.expose_docs = True
+    with TestClient(create_app(cfg)) as client:
+        assert client.get("/openapi.json").status_code == 200
+        assert client.get("/docs").status_code == 200
+
+
+def test_settings_put_requires_the_admin_token(cfg):
+    cfg.app.admin_token = "s3cret"
+    with TestClient(create_app(cfg)) as client:
+        listing = client.get("/api/settings")
+        assert listing.status_code == 200
+        assert listing.json()["read_only"] is True
+
+        denied = client.put("/api/settings", json={"app.default_top_k": 20})
+        assert denied.status_code == 403
+
+        wrong = client.put(
+            "/api/settings",
+            json={"app.default_top_k": 20},
+            headers={"X-Admin-Token": "nope"},
+        )
+        assert wrong.status_code == 403
+
+        ok = client.put(
+            "/api/settings",
+            json={"app.default_top_k": 20},
+            headers={"X-Admin-Token": "s3cret"},
+        )
+        assert ok.status_code == 200
+        assert cfg.app.default_top_k == 20
+
+
 def test_settings_page_and_script_are_served(client):
     page = client.get("/settings")
     assert page.status_code == 200

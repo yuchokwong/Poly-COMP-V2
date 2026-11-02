@@ -124,3 +124,10 @@ docker compose up -d --build
   gallery, so an interrupted captioning run cannot masquerade as a built strategy.
 - `api.py` serves the static pages from `web/`; `/api/search` is a compatibility
   alias for `/api/strategies/clip/search`.
+- Public exposure is opt-in. `app.host` defaults to `127.0.0.1` (both compose files
+  set `TSR_APP__HOST=0.0.0.0` so the published port — gated by `APP_BIND_IP` — can
+  reach it), `app.expose_docs` defaults to false, search queries are capped at
+  `MAX_QUERY_CHARS`, and `app.admin_token` (when set) makes `PUT /api/settings`
+  require `X-Admin-Token` and the settings page read-only. Image responses carry
+  `Cache-Control: public, max-age=86400`; `/api/image` and `/api/thumbnail` only
+  ever resolve paths under `data/images/`.

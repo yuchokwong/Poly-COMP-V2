@@ -14,8 +14,11 @@ services:
       TSR_MODELS__CLIP__CACHE_DIR: /root/.cache/open_clip
       TSR_MODELS__TEXT__CACHE_DIR: /root/.cache/text
       TSR_APP__PRELOAD_MODELS: ${TSR_APP__PRELOAD_MODELS:-true}
+      # The container must listen on all interfaces for the published port to
+      # reach it; APP_BIND_IP decides which host interfaces are published.
+      TSR_APP__HOST: 0.0.0.0
     ports:
-      - "${TSR_APP__PORT:-8000}:8000"
+      - "${APP_BIND_IP:-0.0.0.0}:${TSR_APP__PORT:-8000}:8000"
     volumes:
       # Persistent gallery, index, database and model cache.
       - ./data:/app/data

@@ -33,7 +33,7 @@ def test_override_file_is_merged_over_default(tmp_path):
     assert cfg.app.port == 9123
     assert cfg.strategies.vlm.clip_weight == 0.0
     # keys not present in the override still come from default.yaml
-    assert cfg.app.host == "0.0.0.0"
+    assert cfg.app.host == "127.0.0.1"
     assert cfg.models.clip.pretrained
 
 

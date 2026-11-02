@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import threading
 from contextlib import asynccontextmanager
 
@@ -27,6 +28,13 @@ from tsr.schemas import (
 from tsr.service import StrategyManager, StrategyUnavailable, UnknownStrategy
 
 logger = get_logger(__name__)
+
+# A public demo is a query endpoint: cap the input so one visitor cannot hand
+# the tokenizer and the encoders an arbitrarily large string.
+MAX_QUERY_CHARS = 200
+
+# Image ids are stable and their bytes never change, so they can be cached hard.
+CACHE_HEADERS = {"Cache-Control": "public, max-age=86400"}
 
 PAGES = {
     "/": "index.html",
@@ -61,7 +69,16 @@ def create_app(cfg: AttrDict | None = None) -> FastAPI:
         yield
         app.state.manager.close()
 
-    app = FastAPI(title=str(cfg.app.title), version="2.0.0", lifespan=lifespan)
+    # /docs advertises the whole API surface; keep it off unless asked for.
+    expose_docs = bool(cfg.app.get("expose_docs", False))
+    app = FastAPI(
+        title=str(cfg.app.title),
+        version="2.0.0",
+        lifespan=lifespan,
+        docs_url="/docs" if expose_docs else None,
+        redoc_url="/redoc" if expose_docs else None,
+        openapi_url="/openapi.json" if expose_docs else None,
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -113,7 +130,10 @@ def create_app(cfg: AttrDict | None = None) -> FastAPI:
     @app.get("/api/strategies/{key}/search", response_model=SearchResponse)
     def strategy_search(
         key: str,
-        q: str = Query(..., min_length=1, description="Natural-language query"),
+        q: str = Query(
+            ..., min_length=1, max_length=MAX_QUERY_CHARS,
+            description="Natural-language query",
+        ),
         k: int = Query(default=default_k, ge=1, le=100),
     ) -> SearchResponse:
         try:
@@ -128,7 +148,7 @@ def create_app(cfg: AttrDict | None = None) -> FastAPI:
 
     @app.get("/api/search", response_model=SearchResponse)
     def legacy_search(
-        q: str = Query(..., min_length=1),
+        q: str = Query(..., min_length=1, max_length=MAX_QUERY_CHARS),
         k: int = Query(default=default_k, ge=1, le=100),
         strategy: str = Query(default="clip"),
     ) -> SearchResponse:
@@ -137,7 +157,7 @@ def create_app(cfg: AttrDict | None = None) -> FastAPI:
 
     @app.get("/api/compare", response_model=CompareResponse)
     def compare(
-        q: str = Query(..., min_length=1),
+        q: str = Query(..., min_length=1, max_length=MAX_QUERY_CHARS),
         k: int = Query(default=10, ge=1, le=50),
     ) -> CompareResponse:
         columns = manager().compare(q, clamp(k))
@@ -185,14 +205,14 @@ def create_app(cfg: AttrDict | None = None) -> FastAPI:
         path = manager().image_file(pk)
         if path is None:
             raise HTTPException(status_code=404, detail="Image not found")
-        return FileResponse(path)
+        return FileResponse(path, headers=CACHE_HEADERS)
 
     @app.get("/api/thumbnail/{pk}")
     def thumbnail(pk: int, size: int = Query(default=256, ge=32, le=1024)):
         path = manager().thumbnail(pk, size)
         if path is None:
             raise HTTPException(status_code=404, detail="Image not found")
-        return FileResponse(path, media_type="image/jpeg")
+        return FileResponse(path, media_type="image/jpeg", headers=CACHE_HEADERS)
 
     @app.get("/api/detail/{pk}", response_model=DetailResponse)
     def detail(pk: int) -> DetailResponse:
@@ -253,22 +273,28 @@ def create_app(cfg: AttrDict | None = None) -> FastAPI:
     # ------------------------------------------------------------------ #
     # Settings
     # ------------------------------------------------------------------ #
+    def admin_token() -> str:
+        return str(cfg.app.get("admin_token") or "")
+
     @app.get("/api/settings")
     def settings_get() -> dict:
         from tsr.settings import get_settings
 
-        return {"fields": get_settings(cfg)}
+        return {"fields": get_settings(cfg), "read_only": bool(admin_token())}
 
     @app.put("/api/settings")
-    def settings_put(updates: dict) -> dict:
+    def settings_put(updates: dict, request: Request) -> dict:
         from tsr.settings import apply_settings, get_settings, save_settings
 
+        token = admin_token()
+        if token and not hmac.compare_digest(request.headers.get("X-Admin-Token", ""), token):
+            raise HTTPException(status_code=403, detail="Admin token required")
         try:
             apply_settings(cfg, updates)
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         save_settings(cfg)
-        return {"fields": get_settings(cfg)}
+        return {"fields": get_settings(cfg), "read_only": bool(token)}
 
     # ------------------------------------------------------------------ #
     # Errors and pages

@@ -14,6 +14,7 @@
 
   let fields = [];
   let initial = {};
+  let readOnly = false;
 
   function say(message, tone) {
     status.textContent = message || "";
@@ -31,7 +32,7 @@
 
   function control(field) {
     const id = `field-${field.key}`;
-    const disabled = field.editable === false ? " disabled" : "";
+    const disabled = field.editable === false || readOnly ? " disabled" : "";
     if (field.type === "bool") {
       return `<label class="setting-row">
         <span class="setting-text"><b>${esc(field.label)}</b>
@@ -84,10 +85,17 @@
     try {
       const payload = await api("/api/settings");
       fields = payload.fields || [];
+      readOnly = Boolean(payload.read_only);
       render();
-      saveState.textContent = "loaded";
+      saveButton.disabled = readOnly;
+      saveState.textContent = readOnly ? "read-only" : "loaded";
       saveState.dataset.tone = "ok";
-      say(`${fields.filter((f) => f.editable !== false).length} editable settings.`, "");
+      say(
+        readOnly
+          ? "Settings are read-only on this deployment."
+          : `${fields.filter((f) => f.editable !== false).length} editable settings.`,
+        "",
+      );
     } catch (error) {
       say(`Could not load settings: ${error.message}`, "error");
       saveState.textContent = "offline";
@@ -97,6 +105,10 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (readOnly) {
+      say("Settings are read-only on this deployment.", "");
+      return;
+    }
     const updates = changes();
     if (!Object.keys(updates).length) {
       say("Nothing changed.", "");
@@ -119,7 +131,7 @@
       saveState.textContent = "unsaved";
       saveState.dataset.tone = "error";
     } finally {
-      saveButton.disabled = false;
+      saveButton.disabled = readOnly;
     }
   });
 

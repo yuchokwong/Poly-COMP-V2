@@ -402,12 +402,16 @@ input[type="range"] { accent-color: var(--accent); }
 .setting-row:last-child { border-bottom: 0; }
 .setting-text { display: grid; gap: .15rem; }
 .setting-text small { color: var(--faint); font: .76rem var(--mono); }
-.setting-row input[type="number"] { width: 9rem; padding: .45rem .6rem;
+.setting-row input[type="number"],
+.setting-row input[type="text"] { width: 9rem; padding: .45rem .6rem;
     border-radius: 8px; border: 1px solid var(--line); background: #05060a; color: var(--text); }
+.setting-row input[type="text"]:disabled { color: var(--muted); }
 .setting-row input[type="checkbox"] { width: 1.15rem; height: 1.15rem; accent-color: var(--accent); }
 .settings-actions { display: flex; gap: .7rem; }
-.pill[data-tone="ok"] { color: var(--good); }
-.pill[data-tone="error"] { color: var(--danger); }
+.pill[data-tone="ok"] { color: var(--good); border-color: #5eead444; background: #5eead40d; }
+.pill[data-tone="ok"]::before { background: var(--good); box-shadow: 0 0 10px #5eead4aa; }
+.pill[data-tone="error"] { color: var(--danger); border-color: #ff7a9044; background: #ff7a900d; }
+.pill[data-tone="error"]::before { background: var(--danger); }
 
 @media (max-width: 720px) {
   .topbar { padding: .8rem 1rem; }

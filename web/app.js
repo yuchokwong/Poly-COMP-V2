@@ -92,6 +92,7 @@
   // Search page
   // ------------------------------------------------------------------ //
   let currentStrategy = "clip";
+  let dialogStrategy = "clip";
   let lastQuery = "";
 
   function status(message, isError) {
@@ -229,7 +230,7 @@
         ${metaphors ? `<section><h3>Metaphors</h3><ul class="metaphor-list">${metaphors}</ul></section>` : ""}
         ${vlm}
         <section>
-          <h3>Similar images <small>via ${esc(strategyLabel(currentStrategy))}</small></h3>
+          <h3>Similar images <small>via ${esc(strategyLabel(dialogStrategy))}</small></h3>
           <div class="similar-strip" id="similar-strip"><span class="text-link">loading…</span></div>
         </section>
       </div>`;
@@ -265,12 +266,13 @@
     if (!dialog) return;
     const body = document.getElementById("detail-body");
     if (!body) return;
+    dialogStrategy = strategyKey || currentStrategy;
     body.innerHTML = '<div class="detail-content"><p class="text-link">Loading…</p></div>';
     if (!dialog.open) dialog.showModal();
     try {
       const data = await api(`/api/detail/${id}`);
       body.innerHTML = detailMarkup(data);
-      loadSimilar(id, strategyKey || currentStrategy);
+      loadSimilar(id, dialogStrategy);
     } catch (error) {
       body.innerHTML =
         `<div class="detail-content"><div class="notice error">${esc(error.message)}</div></div>`;
@@ -287,7 +289,7 @@
       const close = event.target.closest("[data-close]");
       if (close) dialog.close();
       const similar = event.target.closest("[data-similar-id]");
-      if (similar) openDetail(Number(similar.dataset.similarId), currentStrategy);
+      if (similar) openDetail(Number(similar.dataset.similarId), dialogStrategy);
     });
     dialog.addEventListener("close", () => {
       const body = document.getElementById("detail-body");
@@ -363,7 +365,8 @@
     }
   }
 
+  // Every page with a detail dialog needs its handlers; home has none and returns early.
+  initDialog();
   if (PAGE === "home") initHome();
   if (PAGE === "search") initSearch();
-  if (PAGE === "compare") initDialog();
 })();

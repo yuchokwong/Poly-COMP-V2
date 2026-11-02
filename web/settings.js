@@ -39,13 +39,15 @@
         <input id="${id}" type="checkbox"${field.value ? " checked" : ""}${disabled}>
       </label>`;
     }
-    const step = field.step != null ? ` step="${field.step}"` : "";
-    const min = field.min != null ? ` min="${field.min}"` : "";
-    const max = field.max != null ? ` max="${field.max}"` : "";
+    const numeric = field.type === "int" || field.type === "float";
+    const type = numeric ? "number" : "text";
+    const step = numeric && field.step != null ? ` step="${field.step}"` : "";
+    const min = numeric && field.min != null ? ` min="${field.min}"` : "";
+    const max = numeric && field.max != null ? ` max="${field.max}"` : "";
     return `<label class="setting-row">
       <span class="setting-text"><b>${esc(field.label)}</b>
         <small>${esc(field.help || field.key)}</small></span>
-      <input id="${id}" type="number" value="${esc(field.value)}"${step}${min}${max}${disabled}>
+      <input id="${id}" type="${type}" value="${esc(field.value)}"${step}${min}${max}${disabled}>
     </label>`;
   }
 

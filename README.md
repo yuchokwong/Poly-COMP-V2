@@ -348,7 +348,7 @@ and how the report reaches `/evaluation`.
 [`docs/evaluation_rewrites.pdf`](docs/evaluation_rewrites.pdf) prints all 240 frozen queries
 next to the annotation each was written from, grouped by category (visual, intent, metaphor).
 
-Both are generated from the repository at build time, not written by hand:
+Both are generated from the repository, not written by hand:
 
 ```bash
 python docs/make_evaluation_pdf.py

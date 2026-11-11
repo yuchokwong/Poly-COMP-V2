@@ -14,6 +14,9 @@
   --accent-3: #f6b26b;
   --danger: #ff7a90;
   --good: #5eead4;
+  --viz-series-1: #3987e5;
+  --viz-series-2: #d95926;
+  --viz-series-3: #199e70;
   --radius: 16px;
   --radius-sm: 10px;
   --shadow: 0 18px 50px #00000055;
@@ -412,6 +415,79 @@ input[type="range"] { accent-color: var(--accent); }
 .pill[data-tone="ok"]::before { background: var(--good); box-shadow: 0 0 10px #5eead4aa; }
 .pill[data-tone="error"] { color: var(--danger); border-color: #ff7a9044; background: #ff7a900d; }
 .pill[data-tone="error"]::before { background: var(--danger); }
+
+/* ------------------------------------------------------------------ */
+/* Tuning                                                              */
+/* ------------------------------------------------------------------ */
+.filters { display: flex; gap: .9rem; flex-wrap: wrap; align-items: flex-end; }
+.filters label {
+  display: flex; flex-direction: column; gap: .3rem; color: var(--faint);
+  font-size: .72rem; text-transform: uppercase; letter-spacing: .08em;
+}
+.filters select {
+  font: inherit; font-size: .88rem; padding: .5rem .7rem; min-width: 12rem;
+  border-radius: 8px; border: 1px solid var(--line); background: #0c0e16;
+  color: var(--text); text-transform: none; letter-spacing: normal;
+}
+.filters select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px #8b7bff22; }
+
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+             gap: 1rem; }
+.stat {
+  position: relative; overflow: hidden; padding: 1rem 1.1rem;
+  background: linear-gradient(180deg, #ffffff09, #ffffff02);
+  border: 1px solid var(--line-soft); border-radius: var(--radius-sm);
+}
+.stat::after { content: ""; position: absolute; inset: 0 0 auto; height: 2px;
+               background: var(--strategy, var(--accent)); opacity: .8; }
+.stat[data-strategy="clip"] { --strategy: #8b7bff; }
+.stat[data-strategy="clip_nlp"] { --strategy: #5eead4; }
+.stat[data-strategy="vlm"] { --strategy: #f6b26b; }
+.stat-label { margin: 0; color: var(--faint); font-size: .75rem;
+              text-transform: uppercase; letter-spacing: .08em; }
+.stat-value { margin: .25rem 0 .1rem; font-size: 1.9rem; font-weight: 650;
+              color: var(--text); font-variant-numeric: tabular-nums; }
+.stat-note { margin: .1rem 0 0; color: var(--muted); font-size: .78rem;
+             overflow-wrap: anywhere; }
+.stat .good { color: var(--good); }
+.stat .bad { color: var(--danger); }
+
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+              gap: 1rem; }
+.chart-card {
+  background: var(--surface); border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm); padding: .9rem 1rem 1rem;
+}
+.chart-card header { display: flex; flex-direction: column; gap: .15rem;
+                     margin-bottom: .6rem; }
+.chart-card h3 { font-size: .98rem; }
+.chart-sub { margin: 0; color: var(--faint); font: .74rem var(--mono); }
+.chart-shell { position: relative; }
+.chart-shell svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart-foot { margin: .5rem 0 0; color: var(--faint); font-size: .75rem; }
+.chart-empty { padding: 2rem 1rem; }
+
+.viz-grid { stroke: var(--line-soft); stroke-width: 1; }
+.viz-axis { fill: var(--faint); font: 10px var(--mono); }
+.viz-axis-dim { fill: var(--faint); font: 10px var(--font); letter-spacing: .05em;
+                text-transform: uppercase; }
+.viz-baseline { stroke: var(--faint); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.viz-line { fill: none; stroke: var(--viz-series-1); stroke-width: 2;
+            stroke-linejoin: round; stroke-linecap: round; }
+.viz-dot { fill: var(--viz-series-1); stroke: var(--surface); stroke-width: 2; }
+.viz-dot.is-baseline { fill: var(--surface); stroke-width: 2; }
+.viz-hit { fill: transparent; pointer-events: all; cursor: pointer; }
+.viz-hit:focus-visible { outline: none; stroke: var(--accent); stroke-width: 1.5; }
+.viz-value { fill: var(--text); font: 600 10px var(--mono); }
+.viz-bar { fill: var(--viz-series-1); }
+
+.chart-tooltip {
+  position: fixed; z-index: 60; display: flex; flex-direction: column; gap: .1rem;
+  padding: .5rem .65rem; border-radius: 8px; border: 1px solid var(--line);
+  background: #0b0c12f2; box-shadow: var(--shadow); color: var(--muted);
+  font-size: .76rem; font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.chart-tooltip span:first-child { color: var(--text); font-weight: 650; }
 
 @media (max-width: 720px) {
   .topbar { padding: .8rem 1rem; }

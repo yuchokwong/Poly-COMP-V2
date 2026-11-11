@@ -72,11 +72,11 @@ running on another machine.
 
 ### 1.3 The online band — how one request is served
 
-**Browser.** Seven static pages (`/`, `/clip`, `/clip-nlp`, `/vlm`, `/compare`,
-`/evaluation`, `/settings`) served from `web/`. They are plain HTML + vanilla JS; all state
-comes from the JSON API, so nothing has to be rebuilt when the data changes.
+**Browser.** Eight static pages (`/`, `/clip`, `/clip-nlp`, `/vlm`, `/compare`,
+`/evaluation`, `/tuning`, `/settings`) served from `web/`. They are plain HTML + vanilla JS;
+all state comes from the JSON API, so nothing has to be rebuilt when the data changes.
 
-**FastAPI.** 18 routes under `/api` — 14 JSON endpoints plus two image and two HTML
+**FastAPI.** 19 routes under `/api` — 15 JSON endpoints plus two image and two HTML
 responses. The important ones are `/api/strategies/{key}/search`,
 `/api/compare`, `/api/eval/summary` and `GET`/`PUT /api/settings`. `k` is limited to 1…100
 and defaults to 12 on `/api/strategies/{key}/search`, `/api/search` and `/api/similar/{pk}`;

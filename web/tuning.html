@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Parameter Tuning — Meme Retrieval</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/tuning.js?v=2" defer></script>
+</head>
+<body data-page="tuning">
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">◉</span> Beyond Vision - Meme Retrieval</a>
+    <nav class="nav">
+      <a href="/clip">CLIP</a>
+      <a href="/clip-nlp">CLIP + NLP</a>
+      <a href="/vlm">VLM</a>
+      <a href="/compare">Compare</a>
+      <a href="/evaluation">Evaluation</a>
+      <a href="/tuning" aria-current="page">Tuning</a>
+      <a href="/settings">Settings</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="page-head">
+      <div>
+        <p class="eyebrow">exploratory · frozen query set</p>
+        <h1>Parameter Tuning</h1>
+        <p class="lede" id="tuning-intro">Loading the latest parameter sweep…</p>
+      </div>
+      <div class="page-head-side">
+        <span class="pill" id="tuning-generated">—</span>
+        <span class="pill" id="tuning-integrity">—</span>
+        <span class="pill" id="tuning-baseline">—</span>
+        <a class="text-link" href="/api/tuning" target="_blank" rel="noreferrer">raw JSON →</a>
+      </div>
+    </section>
+
+    <div class="status-line" id="status" role="status" aria-live="polite"></div>
+
+    <section id="empty-state" class="empty" hidden>
+      <p class="empty-icon">◌</p>
+      <h2>No tuning summary yet</h2>
+      <p>Run the sweep, then reload this page:</p>
+      <pre class="code-block">PYTHONPATH=src python scripts/tune_params.py</pre>
+    </section>
+
+    <div id="tuning-report" hidden>
+      <section class="section">
+        <div class="notice" id="protocol-notice"></div>
+      </section>
+
+      <section class="section" aria-labelledby="filters-title">
+        <div class="section-head"><h2 id="filters-title">Filters</h2>
+          <p>Client-side only; the page never writes to the server.</p></div>
+        <div class="filters">
+          <label>Strategy
+            <select id="filter-strategy">
+              <option value="">All strategies</option>
+            </select>
+          </label>
+          <label>Family
+            <select id="filter-family">
+              <option value="">All families</option>
+            </select>
+          </label>
+          <label>Chart metric
+            <select id="filter-metric">
+              <option value="mAP">mAP</option>
+              <option value="MRR">MRR</option>
+              <option value="ndcg@10">nDCG@10</option>
+              <option value="precision@1">P@1</option>
+              <option value="recall@10">R@10</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="summary-title">
+        <div class="section-head"><h2 id="summary-title">Headline</h2>
+          <p>Baseline mAP and the best single-knob change in each strategy.</p></div>
+        <div class="stat-grid" id="stat-grid"></div>
+      </section>
+
+      <section class="section" aria-labelledby="charts-title">
+        <div class="section-head"><h2 id="charts-title">Parameter effects</h2>
+          <p>One small chart per family. The dashed line is the default configuration;
+            line-chart y-axes are data-driven, not zero-based.</p></div>
+        <div class="chart-grid" id="chart-grid"></div>
+      </section>
+
+      <section class="section" aria-labelledby="runs-title">
+        <div class="section-head"><h2 id="runs-title">All runs</h2>
+          <p>Brackets are 95% bootstrap intervals. Latency is indicative only — every run
+            starts a fresh process, so p50/p95 are not directly comparable.</p></div>
+        <div class="table-wrap"><table class="data-table" id="runs-table"></table></div>
+      </section>
+
+      <section class="section" aria-labelledby="category-title">
+        <div class="section-head"><h2 id="category-title">mAP by query category</h2>
+          <p>Each cell shows mAP and its change against the strategy baseline.</p></div>
+        <div class="table-wrap"><table class="data-table" id="category-table"></table></div>
+      </section>
+
+      <section class="section" aria-labelledby="failures-title" id="failures-section" hidden>
+        <div class="section-head"><h2 id="failures-title">Failed runs</h2>
+          <p>These runs are excluded from the charts but remain in the table.</p></div>
+        <div class="table-wrap"><table class="data-table" id="failures-table"></table></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span>Exploratory tuning only — the <a href="/evaluation">evaluation table</a> is the protocol of record.</span>
+    <span><a href="/api/tuning" target="_blank" rel="noreferrer">raw JSON</a></span>
+  </footer>
+</body>
+</html>

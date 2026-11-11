@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -89,10 +90,48 @@ def test_images_detail_random_and_eval_endpoints(client):
 
 
 def test_pages_are_served(client):
-    for path in ("/", "/clip", "/clip-nlp", "/vlm", "/compare", "/evaluation"):
+    for path in ("/", "/clip", "/clip-nlp", "/vlm", "/compare", "/evaluation", "/tuning"):
         response = client.get(path)
         assert response.status_code == 200, path
         assert "text/html" in response.headers["content-type"]
+
+
+def test_tuning_page_and_api(client, cfg):
+    page = client.get("/tuning")
+    assert page.status_code == 200
+    assert "tuning.js" in page.text
+
+    missing = client.get("/api/tuning")
+    assert missing.status_code == 404
+
+    summary = {
+        "schema_version": 1,
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "runs": [],
+        "groups": [],
+        "baselines": {},
+    }
+    path = Path(cfg.paths.data_dir) / "tuning" / "summary.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(summary), encoding="utf-8")
+
+    ok = client.get("/api/tuning")
+    assert ok.status_code == 200
+    assert ok.headers["cache-control"] == "no-store"
+    assert ok.json()["schema_version"] == 1
+
+    path.write_text(json.dumps({**summary, "schema_version": 2}), encoding="utf-8")
+    assert client.get("/api/tuning").status_code == 503
+
+    path.write_text("{not json", encoding="utf-8")
+    assert client.get("/api/tuning").status_code == 503
+
+
+def test_every_page_links_to_tuning(client):
+    for page in ("/", "/clip", "/clip-nlp", "/vlm", "/compare", "/evaluation", "/settings"):
+        response = client.get(page)
+        assert response.status_code == 200, page
+        assert 'href="/tuning"' in response.text, page
 
 
 def test_settings_get_and_put(client, cfg):

@@ -234,5 +234,10 @@ def reports_dir(cfg: AttrDict) -> Path:
     return data_dir(cfg) / cfg.paths.reports_dir
 
 
+def tuning_dir(cfg: AttrDict) -> Path:
+    """Separate tree for parameter-sweep artifacts; never the main reports dir."""
+    return data_dir(cfg) / "tuning"
+
+
 def settings_path(cfg: AttrDict) -> Path:
     return data_dir(cfg) / "settings.json"

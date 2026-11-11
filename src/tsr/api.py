@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import threading
 from contextlib import asynccontextmanager
 
@@ -12,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from tsr.compare import load_report
-from tsr.config import AttrDict, eval_dir, load_config, reports_dir, web_dir
+from tsr.config import AttrDict, eval_dir, load_config, reports_dir, tuning_dir, web_dir
 from tsr.evaluate import load_queries
 from tsr.logging_utils import get_logger, setup_logging
 from tsr.runtime import configure_threads
@@ -43,6 +44,7 @@ PAGES = {
     "/vlm": "search.html",
     "/compare": "compare.html",
     "/evaluation": "evaluation.html",
+    "/tuning": "tuning.html",
     "/settings": "settings.html",
 }
 
@@ -269,6 +271,30 @@ def create_app(cfg: AttrDict | None = None) -> FastAPI:
             "count": len(queries),
             "queries": [query.to_dict() for query in queries],
         }
+
+    # ------------------------------------------------------------------ #
+    # Parameter tuning (read-only)
+    # ------------------------------------------------------------------ #
+    @app.get("/api/tuning")
+    def tuning_summary():
+        path = tuning_dir(cfg) / "summary.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="No tuning summary. Run `python scripts/tune_params.py` first.",
+            ) from exc
+        except (json.JSONDecodeError, OSError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Tuning summary is unreadable: {path}",
+            ) from exc
+        if payload.get("schema_version") != 1:
+            raise HTTPException(
+                status_code=503, detail="Unsupported tuning summary schema."
+            )
+        return JSONResponse(content=payload, headers={"Cache-Control": "no-store"})
 
     # ------------------------------------------------------------------ #
     # Settings

@@ -11,7 +11,9 @@ FastAPI service, so their retrieval quality can be compared directly:
 | `/vlm` | **C — VLM** | dense index over Qwen2.5-VL descriptions, optional CLIP fusion | offline VLM descriptions |
 
 `/compare` runs a query through all three pipelines side by side, and `/evaluation`
-renders the same frozen benchmark across strategies.
+renders the same frozen benchmark across strategies. `/tuning` is a read-only page for
+an exploratory parameter sweep: `python scripts/tune_params.py` re-runs the frozen
+queries with config overrides into `data/tuning/`, never touching `data/reports/`.
 
 ```
                         ┌──────────── shared gallery ────────────┐
@@ -353,6 +355,28 @@ Both are generated from the repository, not written by hand:
 ```bash
 python docs/make_evaluation_pdf.py
 python docs/make_rewrite_table_pdf.py
+```
+
+[`docs/data_leakage_grades.pdf`](docs/data_leakage_grades.pdf) is the per-query register for
+the same 240 queries: the stored leakage verdict and gate metrics, the grade-2/grade-1 qrels,
+and each strategy's first-relevant rank and AP. It is generated from the frozen eval set and
+the reports in `data/reports/`:
+
+```bash
+python docs/make_leakage_grades_pdf.py
+```
+
+## Parameter tuning report
+
+[`docs/tuning_report.pdf`](docs/tuning_report.pdf) analyses the read-only sweep behind
+`/tuning`: the one-factor protocol and its isolation checks, the full 17-run table, six
+parameter-effect charts, category behaviour, threats to validity and candidate settings.
+Every number is read from `data/tuning/summary.json`; the PDF is generated, not written by
+hand:
+
+```bash
+PYTHONPATH=src python scripts/tune_params.py    # writes data/tuning/summary.json
+python docs/make_tuning_report_pdf.py           # writes docs/tuning_report.pdf
 ```
 
 ## Schematic

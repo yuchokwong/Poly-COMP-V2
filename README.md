@@ -338,6 +338,23 @@ automatic HTTPS.
 confidence intervals, pairwise tests, ablations, the leakage diagnostic and the
 knowledge-cost comparison. Every number in it is reproducible from the commands above.
 
+## Evaluation documentation
+
+[`docs/evaluation_pipeline.pdf`](docs/evaluation_pipeline.pdf) walks through the benchmark end
+to end: where the 240 queries come from, the draft → rewrite → review stage, the leakage gate,
+how graded qrels are assigned, the metric definitions, paired bootstrap and Holm–Bonferroni,
+and how the report reaches `/evaluation`.
+
+[`docs/evaluation_rewrites.pdf`](docs/evaluation_rewrites.pdf) prints all 240 frozen queries
+next to the annotation each was written from, grouped by category (visual, intent, metaphor).
+
+Both are generated from the repository, not written by hand:
+
+```bash
+python docs/make_evaluation_pdf.py
+python docs/make_rewrite_table_pdf.py
+```
+
 ## Schematic
 
 [`docs/system-schematic.pdf`](docs/system-schematic.pdf) is a five-page diagram set —

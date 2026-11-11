@@ -357,10 +357,11 @@ python docs/make_evaluation_pdf.py
 python docs/make_rewrite_table_pdf.py
 ```
 
-[`docs/data_leakage_grades.pdf`](docs/data_leakage_grades.pdf) is the per-query register for
-the same 240 queries: the stored leakage verdict and gate metrics, the grade-2/grade-1 qrels,
-and each strategy's first-relevant rank and AP. It is generated from the frozen eval set and
-the reports in `data/reports/`:
+[`docs/data_leakage_grades.pdf`](docs/data_leakage_grades.pdf) explains the Anti-Leakage
+Evaluation Dataset: the four lexical gates that decide whether a query is leak-free, the
+deterministic Grade 2 / Grade 1 / Grade 0 ground truth, and the checking-and-grading result
+for all 240 queries (including every Grade-1 image id). It is generated from the frozen eval
+set and the manifest:
 
 ```bash
 python docs/make_leakage_grades_pdf.py

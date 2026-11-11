@@ -1,15 +1,15 @@
 """Generate docs/data_leakage_grades.pdf.
 
-A per-query register for all 240 frozen queries of memecap_eval_v1: the stored
-data-leakage verdict and gate metrics, the graded qrels, and each strategy's
-first-relevant rank and average precision.
+The report explains the Anti-Leakage Evaluation Dataset used by
+``memecap_eval_v1``: why the 240 queries exist, the four lexical gates that
+decide whether a query is leak-free, the deterministic Grade 2 / Grade 1 /
+Grade 0 ground truth, and the checking-and-grading result for every query.
 
-The data is read from the same artifacts the evaluator uses:
+It reads only the frozen dataset artifacts:
 
-    data/eval/memecap_eval_v1.json       frozen queries + metadata.leakage
-    data/eval/memecap_eval_v1.qrels.jsonl  graded judgments (qid, image, grade)
-    data/reports/compare.json            per-query rank/AP for A, B, C
-    data/reports/eval_<key>.json         fallback when compare.json is absent
+    data/eval/memecap_eval_v1.json         queries, metadata.leakage, grades
+    data/eval/memecap_eval_v1.qrels.jsonl  the same grades as flat judgments
+    data/manifest.jsonl                     split counts (optional)
 
 Run:  python docs/make_leakage_grades_pdf.py
 """
@@ -72,7 +72,6 @@ MUTED = colors.HexColor("#62717F")
 TEAL = colors.HexColor("#0F766E")
 TEAL_LIGHT = colors.HexColor("#E6F4F1")
 RED = colors.HexColor("#B42318")
-RED_LIGHT = colors.HexColor("#FDECEA")
 LIGHT = colors.HexColor("#F5F7FA")
 RULE = colors.HexColor("#D9E2EC")
 ZEBRA = colors.HexColor("#F7F9FB")
@@ -84,20 +83,18 @@ TM = 56
 BM = 46
 CONTENT_W = PAGE_W - LM - RM
 
-DOC_DATE = "11 November 2026"
+DOC_DATE = "12 November 2026"
 OUT = os.path.join(os.path.dirname(__file__), "data_leakage_grades.pdf")
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EVAL_PATH = os.path.join(REPO, "data", "eval", "memecap_eval_v1.json")
 QRELS_PATH = os.path.join(REPO, "data", "eval", "memecap_eval_v1.qrels.jsonl")
-REPORTS_DIR = os.path.join(REPO, "data", "reports")
+MANIFEST_PATH = os.path.join(REPO, "data", "manifest.jsonl")
 
-STRATEGIES = (
-    ("clip", "A", "A \u00b7 clip (CLIP only)"),
-    ("clip_nlp", "B", "B \u00b7 clip_nlp (CLIP + NL)"),
-    ("vlm", "C", "C \u00b7 vlm (Qwen descriptions)"),
-)
 CATEGORIES = ("visual", "intent", "metaphor")
+DEFAULT_GALLERY = 6378
+DEFAULT_TEST = 558
+DEFAULT_TRAINVAL = 5820
 
 
 def style(name, **kw):
@@ -120,7 +117,10 @@ S_CELL = style("Cell", fontSize=7.2, leading=9.6)
 S_CELL_SMALL = style("CellSmall", fontSize=6.7, leading=9.0)
 S_QUERY = style("Query", fontSize=6.9, leading=9.2)
 S_QID = style("Qid", fontName=MONO, fontSize=6.6, leading=9.0, textColor=MUTED)
+S_IMG = style("Img", fontName=MONO, fontSize=6.0, leading=8.4, textColor=BODY)
+S_IMG_WRAP = style("ImgWrap", fontName=MONO, fontSize=6.4, leading=8.8, textColor=BODY)
 S_NUM = style("Num", fontSize=6.5, leading=9.0, textColor=BODY)
+S_TOTAL = style("Total", fontName=BOLD, fontSize=7.0, leading=9.2, textColor=NAVY)
 S_PASS = style(
     "Pass", fontName=BOLD, fontSize=6.7, leading=9.0, textColor=TEAL, alignment=1
 )
@@ -177,8 +177,9 @@ def load_queries() -> list[dict]:
     return records
 
 
-def load_qrels() -> dict[str, Counter]:
+def load_qrels() -> tuple[dict[str, Counter], int]:
     counts: dict[str, Counter] = {}
+    judgments = 0
     with open(QRELS_PATH, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -186,65 +187,36 @@ def load_qrels() -> dict[str, Counter]:
                 continue
             row = json.loads(line)
             counts.setdefault(str(row["qid"]), Counter())[int(row["grade"])] += 1
+            judgments += 1
+    return counts, judgments
+
+
+def load_counts() -> dict[str, int]:
+    """Gallery and split sizes, preferring the manifest when it is present."""
+    counts = {
+        "gallery": DEFAULT_GALLERY,
+        "test": DEFAULT_TEST,
+        "trainval": DEFAULT_TRAINVAL,
+        "source": "defaults",
+    }
+    if os.path.exists(MANIFEST_PATH):
+        splits: Counter = Counter()
+        with open(MANIFEST_PATH, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                splits[json.loads(line).get("split")] += 1
+        if splits:
+            counts["test"] = splits.get("test", counts["test"])
+            counts["trainval"] = splits.get("trainval", counts["trainval"])
+            counts["gallery"] = sum(splits.values())
+            counts["source"] = "data/manifest.jsonl"
     return counts
 
 
-def load_scores() -> tuple[dict, dict[str, dict]]:
-    """Per-query rank/AP for each strategy, plus provenance.
-
-    ``compare.json`` is the single source when present: it carries the frozen
-    per-query rows for all three strategies and the run provenance. The
-    standalone ``eval_<key>.json`` reports are an equivalent fallback.
-    """
-    meta = {
-        "generated_at": None,
-        "gallery": None,
-        "top_k": [1, 5, 10],
-        "seed": 42,
-        "n_boot": 1000,
-        "source": "data/reports/compare.json",
-    }
-    raw: dict[str, dict | None] = {}
-    compare_path = os.path.join(REPORTS_DIR, "compare.json")
-    if os.path.exists(compare_path):
-        with open(compare_path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        meta["generated_at"] = data.get("generated_at")
-        meta["gallery"] = (data.get("probe") or {}).get("num_images")
-        meta["top_k"] = data.get("top_k") or meta["top_k"]
-        meta["seed"] = data.get("seed", meta["seed"])
-        meta["n_boot"] = data.get("n_boot", meta["n_boot"])
-        strategies = data.get("strategies") or {}
-        for key, _letter, _label in STRATEGIES:
-            raw[key] = strategies.get(key)
-    else:
-        meta["source"] = "data/reports/eval_<key>.json"
-        for key, _letter, _label in STRATEGIES:
-            path = os.path.join(REPORTS_DIR, f"eval_{key}.json")
-            raw[key] = None
-            if os.path.exists(path):
-                with open(path, encoding="utf-8") as fh:
-                    raw[key] = json.load(fh)
-
-    scores: dict[str, dict] = {}
-    for key, _letter, _label in STRATEGIES:
-        report = raw.get(key) or {}
-        rows = report.get("per_query") or []
-        scores[key] = {
-            "ready": bool(report.get("ready")) and bool(rows),
-            "title": report.get("title") or key,
-            "metrics": report.get("metrics") or {},
-            "per_category": report.get("per_category") or {},
-            "rows": {str(row["qid"]): row for row in rows},
-        }
-    return meta, scores
-
-
-def qrels_for(qid: str, query: dict, qrels: dict[str, Counter]) -> Counter:
-    counts = qrels.get(qid)
-    if counts:
-        return counts
-    return Counter(query.get("grades", {}).values())
+def grade1_ids(query: dict) -> list[str]:
+    return sorted(img for img, grade in query["grades"].items() if int(grade) == 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -260,8 +232,8 @@ def _footer(c: canvas.Canvas) -> None:
     c.drawString(
         LM,
         BM - 24,
-        "memecap_eval_v1 \u00b7 per-query leakage grades and retrieval scores \u00b7 "
-        "generated from data/eval/ and data/reports/",
+        "memecap_eval_v1 \u00b7 anti-leakage checking and deterministic grading "
+        "\u00b7 generated from data/eval/",
     )
     c.drawRightString(PAGE_W - RM, BM - 24, f"{c.getPageNumber()}")
     c.restoreState()
@@ -271,7 +243,7 @@ def _header(c: canvas.Canvas) -> None:
     c.saveState()
     c.setFont(REG, 7)
     c.setFillColor(MUTED)
-    c.drawString(LM, PAGE_H - 30, "Data leakage grades \u2014 memecap_eval_v1")
+    c.drawString(LM, PAGE_H - 30, "Anti-Leakage Evaluation Dataset \u2014 checking and grading")
     c.drawRightString(PAGE_W - RM, PAGE_H - 30, f"Meme-Cap T2I retrieval \u00b7 {DOC_DATE}")
     c.setStrokeColor(RULE)
     c.setLineWidth(0.6)
@@ -291,46 +263,30 @@ def on_later(c: canvas.Canvas, _doc) -> None:
 # --------------------------------------------------------------------------- #
 # Tables
 # --------------------------------------------------------------------------- #
-def fmt_ap(value) -> str:
-    return "n/a" if value is None else f"{float(value):.3f}"
-
-
-def fmt_metric(value) -> str:
-    return "n/a" if value is None else f"{float(value):.4f}"
-
-
-def fmt_rank(value) -> str:
-    return "miss" if value is None else str(int(value))
-
-
-def headline_table(
-    queries: list[dict], qrels: dict[str, Counter], scores: dict, meta: dict
-) -> Table:
+def headline_table(queries: list[dict], qrels: dict[str, Counter], counts: dict) -> Table:
     total = len(queries)
     passed = sum(1 for q in queries if q["metadata"]["leakage"]["passed"])
-    judgments = sum(sum(c.values()) for c in qrels.values())
     g2 = sum(c.get(2, 0) for c in qrels.values())
     g1 = sum(c.get(1, 0) for c in qrels.values())
+    judgments = sum(sum(c.values()) for c in qrels.values())
     max_jac = max(q["metadata"]["leakage"]["jaccard"] for q in queries)
-    max_span = max(q["metadata"]["leakage"]["max_source_span"] for q in queries)
-    maps = "  \u00b7  ".join(
-        f"{letter} {fmt_metric(scores[key]['metrics'].get('mAP'))}"
-        for key, letter, _label in STRATEGIES
-    )
-    gallery = meta.get("gallery") or 6378
+    max_run = max(q["metadata"]["leakage"]["max_source_span"] for q in queries)
+    with_g1 = sum(1 for q in queries if grade1_ids(q))
     rows = [
-        [Paragraph("Query set", S_TH), Paragraph("Value", S_TH)],
-        [P("memecap_eval_v1", S_CELL),
+        [Paragraph("Item", S_TH), Paragraph("Value", S_TH)],
+        [P("Query set", S_CELL),
          P(f"{total} frozen queries \u2014 80 visual, 80 intent, 80 metaphor", S_CELL)],
-        [P("Leakage verdicts", S_CELL),
-         P(f"{passed}/{total} PASS \u00b7 {total - passed} FAIL \u00b7 "
-           f"max 8-gram overlap 0 \u00b7 max shared span {max_span} "
-           f"\u00b7 max Jaccard {max_jac:.2f}", S_CELL)],
-        [P("Graded judgments", S_CELL),
-         P(f"{judgments} judgments \u2014 {g2} grade 2 + {g1} grade 1 "
-           "(15 visual queries carry grade-1 near-duplicates)", S_CELL)],
-        [P("Retrieval scores", S_CELL),
-         P(f"mAP {maps} \u00b7 gallery {gallery:,} \u00b7 depth 100", S_CELL)],
+        [P("Source pool", S_CELL),
+         P(f"{counts['test']:,} unseen test memes \u00b7 gallery {counts['gallery']:,} images "
+           f"({counts['trainval']:,} trainval + {counts['test']:,} test)", S_CELL)],
+        [P("Leakage check", S_CELL),
+         P(f"<b>{passed}/{total} PASS</b> \u00b7 max 8-gram 0 \u00b7 max copied run {max_run} "
+           f"(limit &lt;5) \u00b7 max Jaccard {max_jac:.3f} (limit &lt;0.60)", S_CELL)],
+        [P("Ground truth", S_CELL),
+         P(f"{judgments} explicit judgments \u2014 {g2} Grade 2 + {g1} Grade 1; "
+           "Grade 0 is every remaining gallery image", S_CELL)],
+        [P("Who grades", S_CELL),
+         P("Deterministic rules only \u2014 no model or human relevance judgment", S_CELL)],
     ]
     table = Table(rows, colWidths=[118, CONTENT_W - 118])
     table.setStyle(TableStyle([
@@ -349,35 +305,123 @@ def headline_table(
     return table
 
 
-def category_table(queries: list[dict], qrels: dict[str, Counter], scores: dict) -> Table:
+def gate_table(queries: list[dict]) -> Table:
+    total = len(queries)
+    passed = sum(1 for q in queries if q["metadata"]["leakage"]["passed"])
+    head = ["Gate", "What it rules out", "Rule", "Observed on the 240"]
+    widths = [82, 276, 128, 272]
+    rows: list[list] = [[Paragraph(h, S_TH) for h in head]]
+    rows.extend([
+        [P("<b>1 \u00b7 8-gram overlap</b>", S_CELL),
+         P("Copied phrasing from the source annotation or from any gallery annotation", S_CELL),
+         P("= 0 shared 8-grams", S_CELL),
+         P("max 0 (source) \u00b7 max 0 (gallery)", S_CELL)],
+        [P("<b>2 \u00b7 Short-caption containment</b>", S_CELL),
+         P("A whole 3\u20134 word caption pasted inside a longer query \u2014 no 8-gram can catch it", S_CELL),
+         P("no contained short annotation", S_CELL),
+         P("0 source \u00b7 0 gallery", S_CELL)],
+        [P("<b>3 \u00b7 Contiguous copy run</b>", S_CELL),
+         P("A long verbatim fragment even when it is shorter than 8 tokens", S_CELL),
+         P("&lt; 5 tokens shared with the source", S_CELL),
+         P("max 4 (limit &lt; 5)", S_CELL)],
+        [P("<b>4 \u00b7 Token Jaccard</b>", S_CELL),
+         P("Diffuse copying: keeping most of the caption's vocabulary without a long run", S_CELL),
+         P("&lt; 0.60 against the source caption", S_CELL),
+         P("max 0.500 (limit &lt; 0.60)", S_CELL)],
+        [P("<b>Overall</b>", S_TOTAL),
+         P("<b>All four gates, source and gallery</b>", S_TOTAL),
+         P("\u2014", S_TOTAL),
+         P(f"<b>{passed}/{total} PASS</b>", S_TOTAL)],
+    ])
+    table = Table(rows, colWidths=widths, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.35, RULE),
+        ("BOX", (0, 0), (-1, -1), 0.5, RULE),
+        ("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1), LIGHT),
+        ("BACKGROUND", (0, 2), (-1, 2), ZEBRA),
+        ("BACKGROUND", (0, 4), (-1, 4), ZEBRA),
+    ]))
+    return table
+
+
+def grade_table(queries: list[dict], qrels: dict[str, Counter]) -> Table:
+    g2 = sum(c.get(2, 0) for c in qrels.values())
+    g1 = sum(c.get(1, 0) for c in qrels.values())
+    with_g1 = sum(1 for q in queries if grade1_ids(q))
+    head = ["Grade", "Object", "Meaning", "Deterministic assignment", "Count"]
+    widths = [42, 44, 150, 404, 118]
+    rows: list[list] = [[Paragraph(h, S_TH) for h in head]]
+    rows.extend([
+        [P("<b>2</b>", S_TOTAL),
+         P("image", S_CELL),
+         P("The source test meme \u2014 the intended answer", S_CELL),
+         P("Exactly one per query: the image the query was written from "
+           "(<font name=\"Consolas\" size=\"6.6\">metadata.image_id</font>)", S_CELL),
+         P(f"{g2} judgments<br/>(1 per query)", S_CELL)],
+        [P("<b>1</b>", S_TOTAL),
+         P("image", S_CELL),
+         P("A near-equivalent meme, or a meme sharing the same rare metaphor", S_CELL),
+         P("Only these rules fire: <b>visual</b> \u2014 another image's caption has Jaccard "
+           "\u2265 0.8 with the source caption; <b>intent</b> \u2014 identical normalized "
+           "intended meaning; <b>metaphor</b> \u2014 shared specific label with document "
+           "frequency \u2264 10 and similar meaning", S_CELL),
+         P(f"{g1} judgments<br/>({with_g1} visual queries)", S_CELL)],
+        [P("<b>0</b>", S_TOTAL),
+         P("image", S_CELL),
+         P("Every other gallery image", S_CELL),
+         P("Implicit: the complement of Grades 2 and 1. Not written to the qrels file. "
+           "For one query: <font name=\"Consolas\" size=\"6.6\">6,378 \u2212 1 \u2212 G1</font>",
+           S_CELL),
+         P("the rest of<br/>the gallery", S_CELL)],
+    ])
+    table = Table(rows, colWidths=widths, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (4, 1), (4, -1), "CENTER"),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.35, RULE),
+        ("BOX", (0, 0), (-1, -1), 0.5, RULE),
+        ("BACKGROUND", (0, 2), (-1, 2), ZEBRA),
+    ]))
+    return table
+
+
+def category_table(queries: list[dict], qrels: dict[str, Counter]) -> Table:
     head = [
-        "Category", "Queries", "Leak PASS", "Max 8g", "Max span", "Max Jac",
-        "Grade 2", "Grade 1", "mAP A", "mAP B", "mAP C",
+        "Category", "Queries", "Leak PASS", "Max 8g<br/>(src/gal)", "Max run",
+        "Max Jac", "Grade 2", "Grade 1", "Queries<br/>with G1",
     ]
-    widths = [70, 46, 54, 44, 50, 48, 46, 46, 50, 50, 50]
+    widths = [68, 48, 56, 74, 46, 46, 46, 46, 74]
     rows: list[list] = [[Paragraph(h, S_TH) for h in head]]
     for cat in CATEGORIES:
         subset = [q for q in queries if q["category"] == cat]
         leaks = [q["metadata"]["leakage"] for q in subset]
-        counts = [qrels_for(str(q["qid"]), q, qrels) for q in subset]
+        counts = [qrels.get(str(q["qid"])) or Counter(q["grades"].values()) for q in subset]
         g2 = sum(c.get(2, 0) for c in counts)
         g1 = sum(c.get(1, 0) for c in counts)
-        maps = [
-            scores[key]["per_category"].get(cat, {}).get("mAP")
-            for key, _letter, _label in STRATEGIES
-        ]
+        with_g1 = sum(1 for q in subset if grade1_ids(q))
         rows.append([
             P(cat, S_CELL),
             P(str(len(subset)), S_NUM),
             P(f"{sum(1 for x in leaks if x['passed'])}/{len(subset)}", S_NUM),
-            P(str(max(x["max_ngram_overlap"] for x in leaks)), S_NUM),
+            P(f"{max(x['max_ngram_overlap'] for x in leaks)} / "
+              f"{max(x['strict_overlap'] for x in leaks)}", S_NUM),
             P(str(max(x["max_source_span"] for x in leaks)), S_NUM),
             P(f"{max(x['jaccard'] for x in leaks):.3f}", S_NUM),
             P(str(g2), S_NUM),
             P(str(g1), S_NUM),
-            P(fmt_metric(maps[0]), S_NUM),
-            P(fmt_metric(maps[1]), S_NUM),
-            P(fmt_metric(maps[2]), S_NUM),
+            P(str(with_g1), S_NUM),
         ])
     all_leaks = [q["metadata"]["leakage"] for q in queries]
     g2 = sum(c.get(2, 0) for c in qrels.values())
@@ -386,15 +430,15 @@ def category_table(queries: list[dict], qrels: dict[str, Counter], scores: dict)
         P("<b>total</b>", S_CELL),
         P(str(len(queries)), S_NUM),
         P(f"{sum(1 for x in all_leaks if x['passed'])}/{len(queries)}", S_NUM),
-        P(str(max(x["max_ngram_overlap"] for x in all_leaks)), S_NUM),
+        P(f"{max(x['max_ngram_overlap'] for x in all_leaks)} / "
+          f"{max(x['strict_overlap'] for x in all_leaks)}", S_NUM),
         P(str(max(x["max_source_span"] for x in all_leaks)), S_NUM),
         P(f"{max(x['jaccard'] for x in all_leaks):.3f}", S_NUM),
         P(str(g2), S_NUM),
         P(str(g1), S_NUM),
-        *[P(fmt_metric(scores[key]["metrics"].get("mAP")), S_NUM)
-          for key, _letter, _label in STRATEGIES],
+        P(str(sum(1 for q in queries if grade1_ids(q))), S_NUM),
     ])
-    table = Table(rows, colWidths=widths, repeatRows=1)
+    table = Table(rows, colWidths=widths, repeatRows=1, hAlign="LEFT")
     commands = [
         ("BACKGROUND", (0, 0), (-1, 0), NAVY),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -414,36 +458,33 @@ def category_table(queries: list[dict], qrels: dict[str, Counter], scores: dict)
     return table
 
 
-def register_table(queries: list[dict], qrels: dict[str, Counter], scores: dict) -> Table:
+def register_table(queries: list[dict], gallery: int) -> Table:
     head = [
-        "No.", "qid", "Cat", "Query", "Leak", "8g", "span", "Jac", "G2", "G1",
-        "A AP", "B AP", "C AP", "A rank", "B rank", "C rank",
+        "No.", "qid", "Cat", "Query", "Leak", "8g<br/>src/gal", "Short<br/>ann.",
+        "Run<br/>(max)", "Jac", "Grade 2 source", "G1<br/>count", "G0<br/>count",
     ]
-    widths = [24, 40, 48, 248, 34, 26, 30, 38, 22, 22, 38, 38, 38, 34, 34, 34]
+    widths = [22, 38, 46, 300, 34, 36, 34, 28, 36, 110, 28, 42]
     rows: list[list] = [[Paragraph(h, S_TH) for h in head]]
     for number, query in enumerate(queries, start=1):
         qid = str(query["qid"])
         leak = query["metadata"]["leakage"]
-        counts = qrels_for(qid, query, qrels)
-        cells: list = [
+        source = str(query["metadata"]["image_id"])
+        g1 = grade1_ids(query)
+        g0 = gallery - 1 - len(g1)
+        rows.append([
             P(str(number), S_NUM),
             P(qid, S_QID),
             P(str(query["category"]), S_CELL_SMALL),
             P(esc(query["query"]), S_QUERY),
             P("PASS" if leak["passed"] else "FAIL", S_PASS if leak["passed"] else S_FAIL),
-            P(str(leak["max_ngram_overlap"]), S_NUM),
+            P(f"{leak['max_ngram_overlap']}/{leak['strict_overlap']}", S_NUM),
+            P("no" if not (leak["contained"] or leak["gallery_contained"]) else "yes", S_NUM),
             P(str(leak["max_source_span"]), S_NUM),
             P(f"{leak['jaccard']:.3f}", S_NUM),
-            P(str(counts.get(2, 0)), S_NUM),
-            P(str(counts.get(1, 0)), S_NUM),
-        ]
-        for key, _letter, _label in STRATEGIES:
-            row = scores[key]["rows"].get(qid)
-            cells.append(P(fmt_ap(row.get("ap")) if row else "n/a", S_NUM))
-        for key, _letter, _label in STRATEGIES:
-            row = scores[key]["rows"].get(qid)
-            cells.append(P(fmt_rank(row.get("rank")) if row else "n/a", S_NUM))
-        rows.append(cells)
+            P(esc(source), S_IMG),
+            P(str(len(g1)), S_NUM),
+            P(f"{g0:,}", S_NUM),
+        ])
 
     table = Table(rows, colWidths=widths, repeatRows=1)
     commands = [
@@ -457,8 +498,7 @@ def register_table(queries: list[dict], qrels: dict[str, Counter], scores: dict)
         ("ALIGN", (3, 1), (3, -1), "LEFT"),
         ("LINEBELOW", (0, 0), (-1, -1), 0.3, RULE),
         ("LINEBEFORE", (4, 1), (4, -1), 0.45, RULE),
-        ("LINEBEFORE", (10, 1), (10, -1), 0.45, RULE),
-        ("LINEBEFORE", (13, 1), (13, -1), 0.45, RULE),
+        ("LINEBEFORE", (9, 1), (9, -1), 0.45, RULE),
         ("BOX", (0, 0), (-1, -1), 0.5, RULE),
     ]
     for i in range(1, len(rows)):
@@ -468,21 +508,69 @@ def register_table(queries: list[dict], qrels: dict[str, Counter], scores: dict)
     return table
 
 
-def provenance_table(meta: dict, scores: dict) -> Table:
-    generated = meta.get("generated_at") or "not recorded"
-    gallery = meta.get("gallery") or 6378
+def grade1_table(queries: list[dict]) -> Table:
+    head = ["qid", "Category", "Query", "G1", "Grade-1 image ids"]
+    widths = [40, 50, 250, 30, 388]
+    rows: list[list] = [[Paragraph(h, S_TH) for h in head]]
+    rows_for_query = [q for q in queries if grade1_ids(q)]
+    for query in rows_for_query:
+        ids = grade1_ids(query)
+        rows.append([
+            P(str(query["qid"]), S_QID),
+            P(str(query["category"]), S_CELL_SMALL),
+            P(esc(query["query"]), S_QUERY),
+            P(str(len(ids)), S_NUM),
+            P(", ".join(esc(i) for i in ids), S_IMG_WRAP),
+        ])
+    total = sum(len(grade1_ids(q)) for q in rows_for_query)
+    rows.append([
+        P("<b>total</b>", S_TOTAL),
+        P(f"<b>{len(rows_for_query)} queries</b>", S_TOTAL),
+        P("", S_TOTAL),
+        P(f"<b>{total}</b>", S_TOTAL),
+        P("<b>all Grade-1 judgments</b>", S_TOTAL),
+    ])
+    table = Table(rows, colWidths=widths, repeatRows=1)
+    commands = [
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("ALIGN", (3, 0), (3, -1), "CENTER"),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.35, RULE),
+        ("BOX", (0, 0), (-1, -1), 0.5, RULE),
+        ("BACKGROUND", (0, len(rows) - 1), (-1, len(rows) - 1), LIGHT),
+    ]
+    for i in range(1, len(rows) - 1):
+        if i % 2 == 0:
+            commands.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
+    table.setStyle(TableStyle(commands))
+    return table
+
+
+def provenance_table(counts: dict, judgments: int) -> Table:
     rows = [
         [Paragraph("Source artifact", S_TH), Paragraph("Role", S_TH)],
         [P("data/eval/memecap_eval_v1.json", S_CELL),
-         P("240 frozen queries with <b>metadata.leakage</b> and the graded qrels", S_CELL)],
+         P("240 frozen queries: query text, category, "
+           "<font name=\"Consolas\" size=\"6.6\">metadata.leakage</font>, and the "
+           "image-level <font name=\"Consolas\" size=\"6.6\">grades</font> map", S_CELL)],
         [P("data/eval/memecap_eval_v1.qrels.jsonl", S_CELL),
-         P("339 judgments (240 grade 2 + 99 grade 1), a flattened export of the "
-           "same grades", S_CELL)],
-        [P(esc(meta.get("source", "data/reports/compare.json")), S_CELL),
-         P(f"per-query rank and AP for A/B/C; generated {generated}; "
-           f"gallery {gallery:,} images; top_k "
-           f"{'/'.join(str(k) for k in meta.get('top_k') or [])}; "
-           f"seed {meta.get('seed')}", S_CELL)],
+         P(f"The same grades flattened into {judgments} judgments "
+           "(240 Grade 2 + 99 Grade 1)", S_CELL)],
+        [P(esc(counts["source"]), S_CELL),
+         P(f"Split counts: {counts['trainval']:,} trainval + {counts['test']:,} test "
+           f"= {counts['gallery']:,} gallery images", S_CELL)],
+        [P("configs/default.yaml", S_CELL),
+         P("<font name=\"Consolas\" size=\"6.6\">eval.max_ngram_overlap: 8</font>, "
+           "<font name=\"Consolas\" size=\"6.6\">eval.min_copy_tokens: 5</font>, "
+           "<font name=\"Consolas\" size=\"6.6\">eval.metaphor_max_df: 10</font>", S_CELL)],
+        [P("src/tsr/evaluate.py", S_CELL),
+         P("<font name=\"Consolas\" size=\"6.6\">check_leakage()</font> implements the four "
+           "gates; <font name=\"Consolas\" size=\"6.6\">build_eval_query()</font> assigns "
+           "the deterministic Grade 2 and Grade 1 judgments", S_CELL)],
         [P("python docs/make_leakage_grades_pdf.py", S_CELL),
          P("regenerates this document from the artifacts above", S_CELL)],
     ]
@@ -498,6 +586,7 @@ def provenance_table(meta: dict, scores: dict) -> Table:
         ("LINEBELOW", (0, 0), (-1, -1), 0.35, RULE),
         ("BACKGROUND", (0, 2), (-1, 2), ZEBRA),
         ("BACKGROUND", (0, 4), (-1, 4), ZEBRA),
+        ("BACKGROUND", (0, 6), (-1, 6), ZEBRA),
     ]))
     return table
 
@@ -505,180 +594,245 @@ def provenance_table(meta: dict, scores: dict) -> Table:
 # --------------------------------------------------------------------------- #
 # Story
 # --------------------------------------------------------------------------- #
-def build_story(queries: list[dict], qrels: dict[str, Counter], scores: dict, meta: dict) -> list:
+def build_story(
+    queries: list[dict], qrels: dict[str, Counter], judgments: int, counts: dict
+) -> list:
     story: list = []
     total = len(queries)
     passed = sum(1 for q in queries if q["metadata"]["leakage"]["passed"])
-    missing = [key for key, _l, _lab in STRATEGIES if not scores[key]["ready"]]
+    g1_total = sum(c.get(1, 0) for c in qrels.values())
+    with_g1 = sum(1 for q in queries if grade1_ids(q))
+    max_jac = max(q["metadata"]["leakage"]["jaccard"] for q in queries)
+    max_run = max(q["metadata"]["leakage"]["max_source_span"] for q in queries)
 
     # ---------------------------------------------------------------- cover
-    story.append(Spacer(1, 18))
-    story.append(P("Data leakage grades and retrieval scores", S_TITLE))
+    story.append(Spacer(1, 16))
+    story.append(P("Anti-Leakage Evaluation Dataset", S_TITLE))
     story.append(P(
-        f"All {total} frozen queries of <b>memecap_eval_v1</b>, with the leakage verdict and "
-        "gate metrics stored for each one, the graded qrels, and the first-relevant rank and "
-        "average precision of every strategy on the same 6,378-image gallery.", S_SUB))
+        "Checking and grading the 240 frozen queries of <b>memecap_eval_v1</b>: "
+        "four lexical gates, then a deterministic Grade 2 / Grade 1 / Grade 0 "
+        "ground truth over the 6,378-image gallery.", S_SUB))
 
     story.append(callout(
-        "Answer to the request",
-        f"<b>Yes.</b> Every one of the {total} frozen queries has a stored data-leakage verdict "
-        f"in <font name=\"Consolas\" size=\"8\">metadata.leakage</font>, and "
-        f"<b>{passed}/{total} pass</b> the gate. The graded qrels and the per-query retrieval "
-        "scores are printed in the register below.",
+        "What this document answers",
+        f"<b>memecap_eval_v1</b> is the frozen benchmark used to compare Strategies A, B and C. "
+        f"This document explains how its {total} queries are checked for annotation leakage and "
+        "how each query is graded, then prints the result for every query. "
+        f"<b>{passed}/{total} queries pass the leakage check.</b> Every query has exactly one "
+        "Grade 2 source image; 15 visual queries add 99 Grade 1 near-duplicate judgments; every "
+        "other gallery image is Grade 0.",
     ))
     story.append(Spacer(1, 10))
-    story.append(headline_table(queries, qrels, scores, meta))
+    story.append(headline_table(queries, qrels, counts))
     story.append(Spacer(1, 10))
-    story.extend(bullets([
-        '<b>What "grade" means here.</b> Each query has two independent records: a '
-        "leakage verdict (PASS/FAIL plus the gate metrics) and one or more relevance grades "
-        "(grade 2 = the source meme, grade 1 = a deterministic near-duplicate).",
-        "<b>Scores are per query.</b> The register shows each strategy's first-relevant rank "
-        "(<font name=\"Consolas\" size=\"8\">miss</font> when nothing relevant is retrieved) and "
-        "AP. Per-candidate similarity scores are not stored in the reports, so they are not shown.",
-        "<b>Diagnostics excluded.</b> The <font name=\"Consolas\" size=\"8\">*_raw_captions</font> "
-        "reports are leaky by construction and are a separate labelled diagnostic; they never "
-        "enter this table.",
-    ]))
-    if missing:
-        story.append(P(
-            f"<b>Unavailable:</b> {', '.join(missing)} \u2014 affected score cells read "
-            "<font name=\"Consolas\" size=\"8\">n/a</font>.", S_SMALL))
-    story.append(Spacer(1, 6))
+    story.append(callout(
+        "Two axes \u2014 keep them apart",
+        "<b>Query axis (checking).</b> Does the query copy its source annotation? PASS means "
+        "leak-free. This is the outcome the presentation labels \u201cGrade 0 leak-free "
+        "queries\u201d. All 240 are PASS.<br/><br/>"
+        "<b>Image axis (grading).</b> For one query, which gallery images are relevant? "
+        "Grade 2 is the source test meme, Grade 1 is a deterministic near-equivalent, and "
+        "Grade 0 is every other image. These grades describe <i>images</i>, not the query "
+        "verdict. The same numbers are used on both axes, so this document names the axis "
+        "explicitly.",
+        accent=NAVY, bg=LIGHT,
+    ))
+    story.append(Spacer(1, 14))
+    story.append(P("In this document", S_H2))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=RULE, spaceBefore=1, spaceAfter=4))
     story.append(P(
-        "Sources: <font name=\"Consolas\" size=\"7.5\">data/eval/memecap_eval_v1.json</font> "
-        "\u00b7 <font name=\"Consolas\" size=\"7.5\">data/eval/memecap_eval_v1.qrels.jsonl</font> "
-        "\u00b7 <font name=\"Consolas\" size=\"7.5\">data/reports/compare.json</font>. "
-        "Every number is read at build time; nothing is typed in by hand.", S_SMALL))
+        "1 What the dataset is&nbsp;&nbsp;·&nbsp;&nbsp;2 The four leakage gates"
+        "&nbsp;&nbsp;·&nbsp;&nbsp;3 Deterministic grading"
+        "&nbsp;&nbsp;·&nbsp;&nbsp;4 Summary by category"
+        "&nbsp;&nbsp;·&nbsp;&nbsp;5 Per-query register"
+        "&nbsp;&nbsp;·&nbsp;&nbsp;6 Grade-1 judgments"
+        "&nbsp;&nbsp;·&nbsp;&nbsp;7 Provenance", S_SMALL))
     story.append(NextPageTemplate("later"))
     story.append(PageBreak())
 
-    # ---------------------------------------------------------------- definitions
-    story.append(P("1.&nbsp;&nbsp;How to read the grades", S_H1))
+    # ---------------------------------------------------------------- concept
+    story.append(P("1.&nbsp;&nbsp;What the dataset is", S_H1))
     story.append(HRFlowable(width="100%", thickness=1, color=TEAL, spaceBefore=1, spaceAfter=6))
-    story.append(P("Leakage gate", S_H2))
-    story.extend(bullets([
-        "A query is rejected if an <b>8-gram</b> overlaps any annotation field of its source "
-        "<i>or of any gallery image</i>.",
-        "It is rejected if it embeds a whole short annotation (<b>\u2265 4 tokens</b>) \u2014 no "
-        "8-gram can catch a 3-word caption pasted verbatim.",
-        "It is rejected if it shares a contiguous run of <b>\u2265 5 tokens</b> with its source "
-        "caption, or if its token <b>Jaccard \u2265 0.6</b> (no length floor).",
-        "Verdicts are stored per query in <font name=\"Consolas\" size=\"8\">metadata.leakage</font>; "
-        "on this set all 240 pass, so every row reads PASS.",
-    ]))
-    story.append(P("Relevance grades", S_H2))
-    story.extend(bullets([
-        "<b>Grade 2</b> is the source meme itself \u2014 exactly one per query.",
-        "<b>Grade 1</b> is assigned only by deterministic rules: a visual query whose other "
-        "image has caption Jaccard \u2265 0.8; an intent query with identical normalized intended "
-        "meaning; or a metaphor query sharing a specific label (document frequency \u2264 10) "
-        "with a similar meaning. No model judges relevance.",
-        f"On this set, {sum(1 for q in queries if sum(1 for g in q['grades'].values() if g == 1) > 0)} "
-        "visual queries carry grade-1 near-duplicates (99 judgments); intent and metaphor "
-        "queries have one grade-2 image each.",
-    ]))
-    story.append(P("Metric semantics", S_H2))
-    story.extend(bullets([
-        "<b>rank</b> is the 1-based position of the first relevant image (grade 1 or 2); "
-        "<b>AP</b> is average precision over the 100-deep ranked list. Both treat grade 1 and "
-        "grade 2 as equally relevant.",
-        "<b>nDCG@10</b> (summarised, not per row) is the only graded metric: it uses gains "
-        "<font name=\"Consolas\" size=\"8\">2**grade - 1</font>.",
-        "Retrieval depth is <font name=\"Consolas\" size=\"8\">max(top_k, largest relevant "
-        "set, 100)</font>; top_k is 1/5/10 and the largest relevant set is 19, so every list "
-        "is 100 deep.",
-    ]))
-    story.append(Spacer(1, 8))
-
-    # ---------------------------------------------------------------- summary
-    story.append(P("2.&nbsp;&nbsp;Summary by category", S_H1))
-    story.append(HRFlowable(width="100%", thickness=1, color=TEAL, spaceBefore=1, spaceAfter=6))
-    story.append(category_table(queries, qrels, scores))
-    story.append(Spacer(1, 4))
-    spans = Counter(q["metadata"]["leakage"]["max_source_span"] for q in queries)
-    span_text = ", ".join(f"{span} on {count}" for span, count in sorted(spans.items()))
     story.append(P(
-        "All 240 queries pass the leakage gate. Max 8-gram overlap is 0 in every category; "
-        f"the longest shared span is 4 tokens (below the 5-token copy limit); distribution: "
-        f"{span_text}. The highest Jaccard is 0.500, below the 0.600 threshold. Grade-1 "
-        "judgments exist only on visual queries.",
-        S_SMALL))
+        f"<b>memecap_eval_v1</b> contains {total} queries written from the "
+        f"{counts['test']} images in the test split of Meme-Cap. The split is balanced: "
+        "80 <b>visual</b> queries describe what is visible, 80 <b>intent</b> queries paraphrase "
+        "the meme's intended meaning, and 80 <b>metaphor</b> queries name the cultural template "
+        "or metaphor the meme invokes.", S_BODY))
+    story.append(P(
+        "The queries are rewrites, not captions. That is the point of the anti-leakage design: "
+        "Strategies B and C retrieve through the gallery's annotations, so a query that reused "
+        "an annotation's wording could be matched by BM25 or a dense encoder on the copied "
+        "phrase. Such a query would measure the annotation, not the retrieval model. Every "
+        "candidate query must therefore pass four lexical gates before it is frozen.", S_BODY))
+    story.append(P(
+        "The dataset then has two layers. <b>Checking</b> decides whether a query is leak-free. "
+        "<b>Grading</b> records which gallery images count as relevant to that query. They are "
+        "independent: a leak-free query can have more than one relevant image (a near-duplicate "
+        "meme), and a query with one relevant image can still leak. The next two sections take "
+        "each layer in turn.", S_BODY))
+    story.append(Spacer(1, 4))
 
-    example = queries[0]
+    # ---------------------------------------------------------------- checking
+    story.append(P("2.&nbsp;&nbsp;Checking: the four leakage gates", S_H1))
+    story.append(HRFlowable(width="100%", thickness=1, color=TEAL, spaceBefore=1, spaceAfter=6))
+    story.append(P(
+        "The gate is applied query by query. Each candidate is compared with its own source "
+        "annotation and with every annotation in the gallery; it is frozen only if it passes "
+        "all four checks.", S_BODY))
+    story.append(gate_table(queries))
+    story.append(Spacer(1, 7))
+    story.append(P("Why four checks?", S_H2))
+    story.extend(bullets([
+        "<b>8-gram overlap</b> catches direct copying. A shared 8-token sequence with the "
+        "source or with any of the 6,378 gallery annotations is a fail. The gallery-wide "
+        "comparison matters because a query written from one meme can copy a different meme's "
+        "annotation.",
+        "<b>Short-caption containment</b> catches what an 8-gram cannot: a whole 3- or 4-word "
+        "caption pasted into a longer query. If the source annotation is short, the query may "
+        "not contain all of it; the same check runs against gallery annotations.",
+        "<b>The contiguous-run limit</b> catches a long verbatim fragment even when it is "
+        "shorter than 8 tokens. The longest run shared with the source must stay below "
+        "<font name=\"Consolas\" size=\"8\">min_copy_tokens = 5</font>.",
+        "<b>Jaccard</b> catches diffuse copying: a query assembled by deleting words from the "
+        "caption can keep most of its vocabulary without any long contiguous run. Token-set "
+        "Jaccard with the source caption must stay below 0.60.",
+    ]))
+    story.append(P(
+        f"<b>Result.</b> Every query clears every gate. Maximum 8-gram overlap is 0 against "
+        f"both source and gallery; no short annotation is contained; the longest copied run is "
+        f"{max_run} tokens; the highest Jaccard is {max_jac:.3f}. The check is lexical by "
+        "design. It asks whether the query's <i>form</i> was copied; it does not ask whether "
+        "the query is answerable from the image. Answerability is the grading layer's job.",
+        S_BODY))
+    story.append(Spacer(1, 4))
+
+    # ---------------------------------------------------------------- grading
+    story.append(P("3.&nbsp;&nbsp;Grading: deterministic ground truth", S_H1))
+    story.append(HRFlowable(width="100%", thickness=1, color=TEAL, spaceBefore=1, spaceAfter=6))
+    story.append(P(
+        "Each query is paired with a graded set of gallery images. The grades are deterministic: "
+        "the only inputs are the source image, the annotations, and the rules below. No model or "
+        "crowd judge decides relevance.", S_BODY))
+    story.append(grade_table(queries, qrels))
+    story.append(Spacer(1, 7))
+    story.extend(bullets([
+        "<b>Grade 2 is exactly one image per query</b>: "
+        "<font name=\"Consolas\" size=\"8\">metadata.image_id</font>, the test meme the query "
+        "was written from. There are 240 Grade-2 judgments.",
+        f"<b>Grade 1 adds other near-equivalent answers.</b> On this set the rule fires only "
+        f"for visual queries: {with_g1} queries, {g1_total} judgments, at most 18 images for "
+        "q0015. Intent and metaphor queries have no Grade-1 images.",
+        "<b>Grade 0 is implicit.</b> It is every gallery image not graded 2 or 1, so for one "
+        "query it contains <font name=\"Consolas\" size=\"8\">6,378 \u2212 1 \u2212 G1</font> "
+        "images. It is not written to the qrels file; storing tens of thousands of zero "
+        "judgments would add no information.",
+    ]))
+    story.append(Spacer(1, 4))
+
+    # worked example
+    example = next((q for q in queries if 0 < len(grade1_ids(q)) <= 2), queries[0])
     eid = str(example["qid"])
     eleak = example["metadata"]["leakage"]
-    ecounts = qrels_for(eid, example, qrels)
-    score_bits = []
-    for key, letter, _label in STRATEGIES:
-        row = scores[key]["rows"].get(eid)
-        if row:
-            score_bits.append(
-                f"{letter}: AP {fmt_ap(row.get('ap'))}, rank {fmt_rank(row.get('rank'))}"
-            )
-        else:
-            score_bits.append(f"{letter}: n/a")
-    story.append(Spacer(1, 10))
+    eids = grade1_ids(example)
+    eg0 = counts["gallery"] - 1 - len(eids)
+    g1_text = ", ".join(eids) if eids else "none"
     story.append(callout(
         f"Worked example: {eid} ({example['category']})",
         f"<b>{esc(example['query'])}</b><br/>"
-        f"Leakage: {'PASS' if eleak['passed'] else 'FAIL'} · 8-gram "
-        f"{eleak['max_ngram_overlap']} · span {eleak['max_source_span']} · "
-        f"Jaccard {eleak['jaccard']:.3f}. Qrels: G2 {ecounts.get(2, 0)}, "
-        f"G1 {ecounts.get(1, 0)}. " + " · ".join(score_bits) + ".",
+        f"<b>Check:</b> {'PASS' if eleak['passed'] else 'FAIL'} \u2014 8-gram "
+        f"{eleak['max_ngram_overlap']}/{eleak['strict_overlap']}, no short annotation, "
+        f"longest run {eleak['max_source_span']}, Jaccard {eleak['jaccard']:.4f}.<br/>"
+        f"<b>Grade 2:</b> {esc(example['metadata']['image_id'])} (the source test meme).<br/>"
+        f"<b>Grade 1:</b> {esc(g1_text)} ({len(eids)} near-equivalent "
+        f"{'meme' if len(eids) == 1 else 'memes'}).<br/>"
+        f"<b>Grade 0:</b> {eg0:,} other gallery images (implicit).",
     ))
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 4))
+
+    # ---------------------------------------------------------------- summary
+    story.append(P("4.&nbsp;&nbsp;Summary by category", S_H1))
+    story.append(HRFlowable(width="100%", thickness=1, color=TEAL, spaceBefore=1, spaceAfter=6))
+    story.append(category_table(queries, qrels))
+    story.append(Spacer(1, 3))
+    story.append(P(
+        "All categories pass; only visual queries carry Grade-1 images; the highest Jaccard "
+        "is 0.500, below the 0.60 limit.", S_SMALL))
     story.append(PageBreak())
 
     # ---------------------------------------------------------------- register
-    story.append(P(f"3.&nbsp;&nbsp;Per-query register ({total} queries)", S_H1))
+    story.append(P(f"5.&nbsp;&nbsp;Per-query checking and grading ({total} queries)", S_H1))
     story.append(HRFlowable(width="100%", thickness=1, color=TEAL, spaceBefore=1, spaceAfter=6))
     story.append(P(
-        "Rows are in qid order, which is also category order: q0001–q0080 visual, "
-        "q0081–q0160 intent, q0161–q0240 metaphor. <b>Leak</b> is the stored "
-        "verdict; <b>8g</b>, <b>span</b> and "
-        "<b>Jac</b> are the 8-gram overlap, longest shared source span and token Jaccard, "
-        "respectively. The <font name=\"Consolas\" size=\"8\">contained</font>, "
-        "<font name=\"Consolas\" size=\"8\">gallery_contained</font> and "
-        "<font name=\"Consolas\" size=\"8\">strict_overlap</font> flags are 0/false for all 240 "
-        "queries. <b>G2</b>/<b>G1</b> count the graded qrels. <b>AP</b> and <b>rank</b> are the "
-        "per-query retrieval scores for A clip, B clip_nlp and C vlm.", S_SMALL))
+        "Rows are in qid order: q0001\u2013q0080 visual, q0081\u2013q0160 intent, "
+        "q0161\u2013q0240 metaphor. <b>Leak</b> is the query-level verdict: all 240 rows are "
+        "PASS, the presentation's \u201cGrade 0 leak-free\u201d outcome. The Grade 2/1/0 "
+        "columns describe <i>images</i>, not query verdicts. <b>8g</b> is the "
+        "maximum 8-gram overlap with the source / with any gallery annotation. <b>Short</b> "
+        "says whether the query contains a whole short annotation from the source or gallery. "
+        "<b>Run</b> is the longest contiguous token run shared with the source (limit &lt; 5). "
+        "<b>Jac</b> is token Jaccard with the source caption (limit &lt; 0.60). <b>Grade 2 "
+        "source</b> is the image id of the source test meme \u2014 one per query. <b>G1</b> "
+        "counts Grade-1 near-equivalent images; <b>G0</b> counts the remaining gallery images "
+        "(6,378 \u2212 1 \u2212 G1).", S_SMALL))
     story.append(Spacer(1, 6))
-    story.append(register_table(queries, qrels, scores))
+    story.append(register_table(queries, counts["gallery"]))
     story.append(Spacer(1, 5))
     story.append(P(
-        f"Table 1. {total} frozen queries; all {passed} pass the data-leakage gate. "
-        "AP is rounded to three decimals in this table; the reports retain four.", S_SMALL))
+        f"Table 1. {total} frozen queries; {passed}/{total} pass the four-gate leakage check. "
+        "Every query has exactly one Grade 2 source image; all other images are Grade 0 unless "
+        "listed as Grade 1 in Table 2.", S_SMALL))
+
+    # ---------------------------------------------------------------- grade 1
+    story.append(PageBreak())
+    story.append(P("6.&nbsp;&nbsp;Grade-1 judgments", S_H1))
+    story.append(HRFlowable(width="100%", thickness=1, color=TEAL, spaceBefore=1, spaceAfter=6))
+    story.append(P(
+        f"Only {with_g1} visual queries carry Grade-1 images. The table lists every id so the "
+        f"grading can be audited. These {g1_total} judgments plus the 240 Grade-2 source "
+        "judgments are the 339 explicit qrels; every other gallery image is an implicit "
+        "Grade 0.", S_SMALL))
+    story.append(Spacer(1, 6))
+    story.append(grade1_table(queries))
+    story.append(Spacer(1, 5))
+    story.append(P(
+        "Table 2. Deterministic Grade-1 judgments. Intent and metaphor queries have none "
+        "on this set.", S_SMALL))
 
     # ---------------------------------------------------------------- provenance
     story.append(Spacer(1, 14))
-    story.append(P("4.&nbsp;&nbsp;Provenance", S_H1))
+    story.append(P("7.&nbsp;&nbsp;Provenance", S_H1))
     story.append(HRFlowable(width="100%", thickness=1, color=TEAL, spaceBefore=1, spaceAfter=6))
-    story.append(provenance_table(meta, scores))
+    story.append(provenance_table(counts, judgments))
     story.append(Spacer(1, 4))
     story.append(P(
         "Regenerate with <font name=\"Consolas\" size=\"7.5\">python "
-        "docs/make_leakage_grades_pdf.py</font>. The PDF is generated from the repository, "
-        "not written by hand.", S_SMALL))
+        "docs/make_leakage_grades_pdf.py</font>. Every number is read from the repository at "
+        "build time. Retrieval scores are separate from this dataset document; they live in "
+        "<font name=\"Consolas\" size=\"7.5\">data/reports/compare.json</font> and the "
+        "evaluation report.", S_SMALL))
     return story
 
 
 def main() -> None:
     queries = load_queries()
-    qrels = load_qrels()
-    meta, scores = load_scores()
+    qrels, judgments = load_qrels()
+    counts = load_counts()
     if len(queries) != 240:
         print(f"warning: expected 240 queries, found {len(queries)}")
     missing = [q["qid"] for q in queries if str(q["qid"]) not in qrels]
     if missing:
         print(f"warning: no qrels for {len(missing)} queries: {', '.join(missing[:5])}")
-    for key, _letter, _label in STRATEGIES:
-        if not scores[key]["ready"]:
-            print(f"warning: strategy {key} is not ready; its score cells will read n/a")
-            continue
-        absent = [q["qid"] for q in queries if str(q["qid"]) not in scores[key]["rows"]]
-        if absent:
-            print(f"warning: {key} has no per-query row for {len(absent)} queries")
+    for query in queries:
+        qid = str(query["qid"])
+        source = str(query["metadata"]["image_id"])
+        expected = Counter(int(g) for g in query["grades"].values())
+        if expected.get(2, 0) != 1:
+            print(f"warning: {qid} has {expected.get(2, 0)} Grade-2 images")
+        if str(source) not in query["grades"] or int(query["grades"][source]) != 2:
+            print(f"warning: {qid} source image is not graded 2")
+        if qid in qrels and qrels[qid] != expected:
+            print(f"warning: {qid} qrels disagree with the grades map")
 
     doc = BaseDocTemplate(
         OUT,
@@ -687,9 +841,10 @@ def main() -> None:
         rightMargin=RM,
         topMargin=TM,
         bottomMargin=BM,
-        title="Data leakage grades and retrieval scores",
+        title="Anti-Leakage Evaluation Dataset: checking and grading",
         author="Meme-Cap T2I retrieval",
-        subject="Per-query leakage verdicts, graded qrels and retrieval scores for memecap_eval_v1",
+        subject="The four leakage gates and deterministic Grade 2/1/0 ground truth "
+                "for the 240 queries of memecap_eval_v1",
     )
     frame_first = Frame(LM, BM, CONTENT_W, PAGE_H - TM - BM, id="first")
     frame_later = Frame(LM, BM, CONTENT_W, PAGE_H - TM - BM, id="later")
@@ -697,8 +852,8 @@ def main() -> None:
         PageTemplate(id="first", frames=[frame_first], onPage=on_first),
         PageTemplate(id="later", frames=[frame_later], onPage=on_later),
     ])
-    doc.build(build_story(queries, qrels, scores, meta))
-    print(f"Wrote {OUT} ({len(queries)} queries)")
+    doc.build(build_story(queries, qrels, judgments, counts))
+    print(f"Wrote {OUT} ({len(queries)} queries, {judgments} judgments)")
 
 
 if __name__ == "__main__":
